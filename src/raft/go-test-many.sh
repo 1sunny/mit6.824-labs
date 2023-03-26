@@ -81,7 +81,10 @@ finish() {
 				"$(pwd)\n$(grep FAIL: -- *.log | sed -e 's/.*FAIL: / - /' -e 's/ (.*)//' | sort -u)"
 		fi
 		((failed += 1))
+    echo "FAIL "$2""
 	else
+	  echo "PASS "$2""
+	  rm "T"$2".log"
 		((success += 1))
 	fi
 
@@ -107,7 +110,7 @@ cleanup() {
 	for pid in "${waits[@]}"; do
 		kill "$pid"
 		wait "$pid"
-		rm -rf "test-${is[0]}.err" "test-${is[0]}.log"
+#		rm -rf "test-${is[0]}.err" "test-${is[0]}.log"
 		is=("${is[@]:1}")
 	done
 	exit 0
@@ -119,7 +122,7 @@ for i in $(seq "$((success+failed+1))" "$runs"); do
 	# If we have already spawned the max # of testers, wait for one to
 	# finish. We'll wait for the oldest one beause it's easy.
 	if [[ ${#waits[@]} -eq "$parallelism" ]]; then
-		finish "${waits[0]}"
+		finish "${waits[0]}" "${is[0]}"
 		waits=("${waits[@]:1}") # this funky syntax removes the first
 		is=("${is[@]:1}")       # element from the array
 	fi
@@ -131,10 +134,12 @@ for i in $(seq "$((success+failed+1))" "$runs"); do
 
 	# Run the tester, passing -test.run if necessary
 	if [[ -z "$test" ]]; then
-		./tester -test.v 2> "test-${i}.err" > "test-${i}.log" &
+		# ./tester -test.v 2> "test-${i}.err" > "test-${i}.log" &
+		./tester -test.v 1> "T${i}.log" 2>&1 &
 		pid=$!
 	else
-		./tester -test.run "$test" -test.v 2> "test-${i}.err" > "test-${i}.log" &
+		# ./tester -test.run "$test" -test.v 2> "test-${i}.err" > "test-${i}.log" &
+		./tester -test.run "$test" -test.v 1> "T${i}.log" 2>&1 &
 		pid=$!
 	fi
 
@@ -143,9 +148,12 @@ for i in $(seq "$((success+failed+1))" "$runs"); do
 done
 
 # Wait for remaining testers
-for pid in "${waits[@]}"; do
-	finish "$pid"
-done
+#for pid in "${waits[@]}"; do
+#	finish "$pid"
+#done
+for(( i=0;i<${#waits[@]};i++)) do
+  finish ${waits[i]} ${is[i]}
+done;
 
 if ((failed>0)); then
 	exit 1

@@ -1,29 +1,117 @@
 package mr
 
-import "log"
+import (
+	"log"
+	"sync"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
-
 type Master struct {
 	// Your definitions here.
+	nReduce       int
+	nWorker       int
+	files         []string
+	nMapDone      int
+	nReduceDone   int
+	mapStatus     []int
+	reduceStatus  []int
+	interFilePath [][]string
+	mutex         sync.Mutex
+}
 
+const (
+	UNASSIGNED = iota
+	ASSIGNED
+	DONE
+)
+
+func (m *Master) getMapTask() int {
+	// try unassigned map task
+	for i := 0; i < m.nWorker; i++ {
+		if m.mapStatus[i] == UNASSIGNED {
+			return i
+		}
+	}
+	// try assigned map task
+	for i := 0; i < m.nWorker; i++ {
+		if m.mapStatus[i] == ASSIGNED {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *Master) getReduceTask() int {
+	if m.nMapDone != m.nWorker {
+		return -1
+	}
+	// try unassigned reduce task
+	for i := 0; i < m.nReduce; i++ {
+		if m.reduceStatus[i] == UNASSIGNED {
+			return i
+		}
+	}
+	// try assigned reduce task
+	for i := 0; i < m.nReduce; i++ {
+		if m.reduceStatus[i] == ASSIGNED {
+			return i
+		}
+	}
+	return -1
 }
 
 // Your code here -- RPC handlers for the worker to call.
-
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (m *Master) AssignTask(args *TaskArgs, reply *TaskReply) error {
+	log.Println("Receive args: ", args)
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	switch args.Status {
+	case FREE:
+	case MAP_DONE:
+		if m.mapStatus[args.TaskNum] != DONE {
+			m.mapStatus[args.TaskNum] = DONE
+			for i := 0; i < m.nReduce; i++ {
+				m.interFilePath[args.TaskNum][i] = args.Paths[i]
+			}
+			m.nMapDone += 1
+		}
+	case REDUCE_DONE:
+		if m.reduceStatus[args.TaskNum] != DONE {
+			m.reduceStatus[args.TaskNum] = DONE
+			m.nReduceDone += 1
+		}
+	default:
+		log.Fatal("Status Error")
+	}
+	reply.NWorker = m.nWorker
+	reply.NReduce = m.nReduce
+	taskIdx := m.getMapTask()
+	if taskIdx != -1 {
+		reply.TaskType = MAP_TASK
+		reply.TaskNum = taskIdx
+		reply.Paths = []string{m.files[taskIdx]}
+		return nil
+	}
+	taskIdx = m.getReduceTask()
+	if taskIdx != -1 {
+		reply.TaskType = REDUCE_TASK
+		reply.TaskNum = taskIdx
+		reply.Paths = []string{}
+		for i := 0; i < m.nWorker; i++ {
+			reply.Paths = append(reply.Paths, m.interFilePath[i][taskIdx])
+		}
+		return nil
+	}
+	if m.nMapDone == m.nWorker && m.nReduce == m.nReduceDone {
+		reply.TaskType = SHUTDOWN
+	} else {
+		reply.TaskType = NO_TASK
+	}
 	return nil
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -46,12 +134,8 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
 	// Your code here.
-
-
-	return ret
+	return m.nReduce == m.nReduceDone && m.nWorker == m.nMapDone
 }
 
 //
@@ -63,7 +147,15 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
-
+	m.nReduce = nReduce
+	m.nWorker = len(files)
+	m.files = files
+	m.mapStatus = make([]int, m.nWorker)
+	m.reduceStatus = make([]int, m.nReduce)
+	m.interFilePath = make([][]string, m.nWorker)
+	for i := range m.interFilePath {
+		m.interFilePath[i] = make([]string, nReduce)
+	}
 
 	m.server()
 	return &m

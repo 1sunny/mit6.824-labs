@@ -229,6 +229,7 @@ func (cfg *config) cleanup() {
 	}
 	cfg.net.Cleanup()
 	cfg.checkTimeout()
+	DPrintf("Test End ----------------")
 }
 
 // attach server i to the net.
@@ -300,6 +301,8 @@ func (cfg *config) setlongreordering(longrel bool) {
 // check that there's exactly one leader.
 // try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
+	DPrintf("--- In checkOneLeader ---")
+	defer DPrintf("--- Out checkOneLeader ---")
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
 		DPrintf("start sleep...")
@@ -429,6 +432,8 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
+	DPrintf("--- In One ---")
+	defer DPrintf("--- Out One ---")
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 {
@@ -469,6 +474,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
+			DPrintf("retry send")
 		} else {
 			time.Sleep(50 * time.Millisecond)
 		}
