@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"math/rand"
@@ -28,8 +29,7 @@ import (
 import "sync/atomic"
 import "../labrpc"
 
-// import "bytes"
-// import "../labgob"
+import "../labgob"
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -49,7 +49,7 @@ type ApplyMsg struct {
 }
 
 func (p ApplyMsg) String() string {
-	return fmt.Sprintf("CommandIndex:%d", p.CommandIndex)
+	return fmt.Sprintf("CommandIndex:%d, Valid:%v", p.CommandIndex, p.CommandValid)
 }
 
 type State string
@@ -59,6 +59,7 @@ const (
 	CANDIDATE State = "Candidate"
 	LEADER    State = "Leader"
 	DEAD      State = "Dead"
+	NoOp            = 0
 )
 
 type Log struct {
@@ -89,7 +90,7 @@ type Raft struct {
 	votedFor     int // candidateId that received vote in current term (or null if none)
 	state        State
 	lastBeatTime time.Time
-	randTime     time.Duration
+	randDuration time.Duration
 	// log
 	logs []Log
 
@@ -119,13 +120,14 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	DPrintf("[%d] 持久数据 currentTerm: [%d], votedFor: [%d], logs: [%v]", rf.me, rf.currentTerm, rf.votedFor, rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -136,18 +138,27 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logs []Log
+	if err := d.Decode(&currentTerm); err != nil {
+		DPrintf("读取currentTerm失败: [%v]", err)
+		return
+	}
+	if err := d.Decode(&votedFor); err != nil {
+		DPrintf("读取votedFor失败: [%v]", err)
+		return
+	}
+	if err := d.Decode(&logs); err != nil {
+		DPrintf("读取logs失败: [%v]", err)
+		return
+	}
+	rf.currentTerm = currentTerm
+	rf.votedFor = votedFor
+	rf.logs = logs
+	DPrintf("[%d] 读取数据 currentTerm: [%d], votedFor: [%d], logs: [%v]", rf.me, rf.currentTerm, rf.votedFor, rf.logs)
 }
 
 //
@@ -193,12 +204,12 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) restartElectionTimer() {
-	rf.randTime = getRandomNum(150, 300)
+	rf.randDuration = getRandomNum(150, 300)
 	rf.lastBeatTime = time.Now()
 }
 
 func (rf *Raft) timeout() bool {
-	return time.Since(rf.lastBeatTime) > rf.randTime*time.Millisecond
+	return time.Since(rf.lastBeatTime) > rf.randDuration*time.Millisecond
 }
 
 //
@@ -215,6 +226,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
+	defer rf.persist()
 	// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 	if args.Term > rf.currentTerm {
 		DPrintf("[%d] 状态 [%v] -> [%v], 任期 [%d] -> [%d]", rf.me, rf.state, FOLLOWER, rf.currentTerm, args.Term)
@@ -306,6 +318,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Cmd:  command,
 	})
 	DPrintf("[%d] 在任期 [%d] 收到命令index: [%d], 所有日志: [%v]", rf.me, rf.currentTerm, index, rf.logs)
+	rf.persist()
 	return index, term, true
 }
 
@@ -404,7 +417,7 @@ func startElection(rf *Raft) {
 		// 等待选举计时器超时
 		for rf.state == LEADER || !rf.timeout() {
 			rf.mu.Unlock()
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond) // 也许更短的睡眠时间更能防止计时器同时超时
 			rf.mu.Lock()
 		}
 		if rf.killed() {
@@ -421,6 +434,7 @@ func startElection(rf *Raft) {
 		rf.currentTerm++
 		// Candidates (§5.2):  Vote for self
 		rf.votedFor = rf.me // !
+		rf.persist()
 		count := 1
 		DPrintf("[%d] 在任期 [%d] 开始竞选", rf.me, rf.currentTerm)
 		// Candidates (§5.2): Reset election timer
@@ -450,15 +464,19 @@ func startElection(rf *Raft) {
 				// --
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
+				DPrintf("[%d] 在任期 [%d] 收到 [%d] 回复: [%+v]", rf.me, t, x, reply)
 				// All Servers: If RPC request or response contains term T > currentTerm:
 				// set currentTerm = T, convert to follower (§5.1)
 				if reply.Term > rf.currentTerm {
 					DPrintf("[%d] 任期 [%d] -> [%d], 状态 [%v] -> [%v]", rf.me, rf.currentTerm, reply.Term, rf.state, FOLLOWER)
 					rf.currentTerm = reply.Term
 					rf.state = FOLLOWER
-					rf.restartElectionTimer()
 					rf.votedFor = -1
+					rf.persist()
+					rf.restartElectionTimer()
 					return
+				} else {
+					DPrintf("[%d] 在任期 [%d] 收到 [%d] 的回复已失效", rf.me, t, x)
 				}
 
 				if !reply.VoteGranted {
@@ -471,6 +489,12 @@ func startElection(rf *Raft) {
 					// 如果之前被变为 follower,则竞选失败,因为任期现在可能已经变化了
 					if rf.state == CANDIDATE && rf.currentTerm == t {
 						rf.state = LEADER
+						// However, if S1 replicates an en-try from its current term on a majority of the servers
+						// before crashing, as in (e), then this entry is committed (S5 cannot win an election)
+						rf.logs = append(rf.logs, Log{
+							Term: rf.currentTerm,
+							Cmd:  NoOp,
+						}) // 不需要持久化
 						DPrintf("[%d] 成为任期 [%d] 的Leader", rf.me, t)
 						// 2B 当 leader 刚上任时，它会初始化所有的 nextIndex 值为最后一条日志的下一个索引
 						DPrintf("[%d] 初始化所有 nextIndex 为 [%d]", rf.me, len(rf.logs))
@@ -491,13 +515,14 @@ func startElection(rf *Raft) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%d] 在任期: [%d] 收到 [%d] 的心跳 [%+v]", rf.me, args.Term, args.LeaderId, args)
+	DPrintf("[%d] 在任期: [%d] 收到 [%d] 的心跳 [%+v]", rf.me, rf.currentTerm, args.LeaderId, args)
 	reply.Term = rf.currentTerm
 	// Receiver implementation: #1 Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
 	}
+	defer rf.persist()
 	/* restart timer */
 	rf.restartElectionTimer()
 	if args.Term > rf.currentTerm {
@@ -622,6 +647,7 @@ func sendAppendEntries(rf *Raft) {
 					rf.currentTerm = reply.Term
 					rf.state = FOLLOWER
 					rf.votedFor = -1
+					rf.persist()
 					rf.restartElectionTimer()
 					// 领导者发送了一个 AppendEntries RPC，但RPC被拒绝了，
 					// 但不是因为日志不一致（这只有在我们的任期结束时才会发生,由于新的领导者产生了?????）
