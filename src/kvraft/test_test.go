@@ -12,6 +12,7 @@ import "sync"
 import "sync/atomic"
 import "fmt"
 import "io/ioutil"
+import "../util"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -175,7 +176,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		title = title + "one client"
 	}
 	title = title + " (" + part + ")" // 3A or 3B
-
+	util.DPrintf("------------  %v Start -----------------------", title)
+	defer util.DPrintf("------------  %v End -----------------------", title)
 	const nservers = 5
 	cfg := make_config(t, nservers, unreliable, maxraftstate)
 	defer cfg.cleanup()
@@ -192,7 +194,6 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		clnts[i] = make(chan int)
 	}
 	for i := 0; i < 3; i++ {
-		// log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
@@ -496,6 +497,8 @@ func TestUnreliableOneKey3A(t *testing.T) {
 // doesn't go through until the partition heals.  The leader in the original
 // network ends up in the minority partition.
 func TestOnePartition3A(t *testing.T) {
+	util.DPrintf("------------  TestOnePartition3A Start -----------------------")
+	defer util.DPrintf("------------  TestOnePartition3A End -----------------------")
 	const nservers = 5
 	cfg := make_config(t, nservers, false, -1)
 	defer cfg.cleanup()
