@@ -50,7 +50,7 @@ type ApplyMsg struct {
 }
 
 func (p ApplyMsg) String() string {
-	return fmt.Sprintf("%d:%d ", p.CommandIndex, p.Command.(int))
+	return fmt.Sprintf("%d:%v ", p.CommandIndex, p.Command)
 }
 
 type State string
@@ -73,7 +73,7 @@ type Log struct {
 }
 
 func (p Log) String() string {
-	return fmt.Sprintf("%d:%d ", p.Term, p.Cmd.(int))
+	return fmt.Sprintf("%d:%+v ", p.Term, p.Cmd)
 }
 
 const raftDebug = 1
@@ -265,7 +265,7 @@ func (rf *Raft) toLeader() {
 	// 2B 当 leader 刚上任时，它会初始化所有的 nextIndex 值为最后一条日志的下一个索引
 	rf.debug("初始化所有 nextIndex 为 [%d]", len(rf.logs))
 	for i := range rf.peers {
-		rf.nextIndex[i] = len(rf.logs)
+		rf.nextIndex[i] = len(rf.logs) - 1 // 因为最新的 NoOp其它节点肯定没有,所以-1
 	}
 	rf.matchIndex[rf.me] = len(rf.logs) - 1
 }
@@ -425,7 +425,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		currentTerm:  0,
 		votedFor:     -1,
 		state:        FOLLOWER,
-		lastBeatTime: time.Time{},
+		lastBeatTime: time.Now(),
 		randDuration: 0,
 		logs:         []Log{{Term: 0, Cmd: 0}},
 		commitIndex:  0,
@@ -434,7 +434,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		matchIndex:   make([]int, len(peers)),
 		applyCh:      applyCh,
 	}
-	rf.restartElectionTimer()
+	if me != 0 {
+		rf.restartElectionTimer() // 0 start election first
+	}
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	go rf.startElection()
@@ -593,7 +595,7 @@ func (rf *Raft) updateCommitIndex(args *AppendEntriesArgs) {
 		if rf.commitIndex < oldCommitIndex { // commitIndex 减小
 			log.Fatalf("commitIndex: [%d] -> [%d]", oldCommitIndex, rf.commitIndex)
 		}
-		rf.debug("commitIndex: [%d] -> [%d]", rf.commitIndex, oldCommitIndex)
+		rf.debug("commitIndex: [%d] -> [%d]", oldCommitIndex, rf.commitIndex)
 		rf.cond.Broadcast()
 	}
 }
@@ -716,13 +718,13 @@ func (rf *Raft) appendEntries() {
 			然后将当前term与您在原始 RPC 中发送的term进行比较，如果两者不同，则丢弃回复并返回。
 			*/
 			// Old RPC !!!!!!! matchIndex 是单调递增的
-			if oldTerm != rf.currentTerm || prevIndex+len(entries) <= rf.matchIndex[x] {
+			if oldTerm != rf.currentTerm || prevIndex+len(entries) < rf.matchIndex[x] {
 				rf.debug("接收到过时的回复 {%+v}", reply)
 				return
 			}
 			if reply.Success {
 				/* 假设在发送 RPC 和收到回复之间您的状态没有改变。一个很好的例子是当您收到对 RPC 的响应时设置 matchIndex = nextIndex - 1 或 matchIndex = len(log)这是不安全的，因为自从您发送 RPC 后，这两个值都可能已更新。相反，正确的做法是根据您最初在 RPC 中发送的参数将 matchIndex 更新为 prevLogIndex + len(entries[]) */
-				rf.debug("extIndex[%d]: [%d](RPC) -> [%d](rf) -> [%d],"+
+				rf.debug("nextIndex[%d]: [%d](RPC) -> [%d](rf) -> [%d],"+
 					"matchIndex[%d]: [%d](RPC) ->  [%d](rf) -> [%d]",
 					x, prevIndex+1, rf.nextIndex[x], prevIndex+len(entries)+1,
 					x, oldMatchIndex, rf.matchIndex[x], prevIndex+len(entries))
