@@ -16,6 +16,7 @@ import "time"
 import "math/rand"
 import "sync/atomic"
 import "sync"
+import "../util"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -60,31 +61,31 @@ func TestReElection2A(t *testing.T) {
 	cfg.begin("Test (2A): election after network failure")
 
 	leader1 := cfg.checkOneLeader()
-	DPrintf("leader1: [%d]", leader1)
+	util.DPrintf("leader1: [%d]", leader1)
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	new_leader := cfg.checkOneLeader()
-	DPrintf("after leader1 exit's new leader: [%d]", new_leader)
+	util.DPrintf("after leader1 exit's new leader: [%d]", new_leader)
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
-	DPrintf("after leader1 join's leader: [%d]---", leader2)
+	util.DPrintf("after leader1 join's leader: [%d]---", leader2)
 	// if there's no quorum, no leader should
 	// be elected.
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
-	DPrintf("no leader pass---")
+	util.DPrintf("no leader pass---")
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
 	leader3 := cfg.checkOneLeader()
-	DPrintf("quorum arises, it should elect a leader: [%d]", leader3)
+	util.DPrintf("quorum arises, it should elect a leader: [%d]", leader3)
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
 	leader4 := cfg.checkOneLeader()
-	DPrintf("re-join of last node shouldn't prevent leader from existing: [%d]", leader4)
+	util.DPrintf("re-join of last node shouldn't prevent leader from existing: [%d]", leader4)
 	cfg.end()
 }
 
@@ -147,7 +148,7 @@ func TestRPCBytes2B(t *testing.T) {
 }
 
 func TestFailAgree2B(t *testing.T) {
-	DPrintf("Test (2B): agreement despite follower disconnection Start ----------------")
+	util.DPrintf("Test (2B): agreement despite follower disconnection Start ----------------")
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -182,7 +183,7 @@ func TestFailAgree2B(t *testing.T) {
 }
 
 func TestFailNoAgree2B(t *testing.T) {
-	DPrintf("Test (2B): no agreement if too many followers disconnect Start ----------------")
+	util.DPrintf("Test (2B): no agreement if too many followers disconnect Start ----------------")
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -433,7 +434,7 @@ func TestBackup2B(t *testing.T) {
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
-		DPrintf("one: [%d]", i)
+		util.DPrintf("one: [%d]", i)
 	}
 
 	// now everyone

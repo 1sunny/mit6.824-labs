@@ -29,7 +29,7 @@ import (
 )
 import "sync/atomic"
 import "../labrpc"
-
+import "../util"
 import "../labgob"
 
 //
@@ -78,8 +78,9 @@ func (p Log) String() string {
 
 const raftDebug = 1
 
+// caller should hold rf.lock
 func (rf *Raft) debug(format string, a ...interface{}) {
-	var logger = log.New(os.Stdout, fmt.Sprintf("[%d:%v:%d:%d] ", rf.me, rf.state, rf.currentTerm, rf.commitIndex), log.Ltime|log.Lmicroseconds)
+	var logger = log.New(os.Stdout, fmt.Sprintf("%s [%d:%v:%d:%d] ", util.GetTimeBuf(), rf.me, rf.state, rf.currentTerm, rf.commitIndex), 0)
 	if raftDebug > 0 {
 		logger.Printf(format, a...)
 	}
@@ -456,9 +457,9 @@ func (rf *Raft) applyLogs() {
 			Command:      rf.logs[rf.lastApplied].Cmd,
 			CommandIndex: rf.lastApplied,
 		}
+		rf.debug("提交 [%v]", msg)
 		rf.mu.Unlock() // fix BUG: 先释放锁,applyCh可能会阻塞 ?
 		rf.applyCh <- msg
-		rf.debug("提交 [%v]", msg)
 	}
 }
 
@@ -482,16 +483,16 @@ func (rf *Raft) sendRequestVote() {
 				LastLogIndex: len(rf.logs) - 1,
 				LastLogTerm:  rf.logs[len(rf.logs)-1].Term,
 			}
+			rf.debug("在任期 [%d] 给 [%d] 发送 {%+v}", oldTerm, x, args)
 			rf.mu.Unlock()
 			reply := RequestVoteReply{}
-			rf.debug("在任期 [%d] 给 [%d] 发送 {%+v}", oldTerm, x, args)
 			// --
 			if !rf.peers[x].Call("Raft.RequestVote", &args, &reply) {
 				return
 			}
 			// --
-			rf.debug("在任期 [%d] 收到 [%d] 回复: {%+v}", oldTerm, x, reply)
 			rf.mu.Lock()
+			rf.debug("在任期 [%d] 收到 [%d] 回复: {%+v}", oldTerm, x, reply)
 			defer rf.mu.Unlock()
 			// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 			if reply.Term > rf.currentTerm {
@@ -689,15 +690,15 @@ func (rf *Raft) appendEntries() {
 				LeaderCommit: rf.commitIndex,
 			}
 			reply := AppendEntriesReply{}
+			rf.debug("在任期: [%d] 发给 [%d], Entries: [%+v]", oldTerm, x, args)
 			rf.mu.Unlock()
 			// --- fix BUG: 判断 RPC是否成功,不成功直接返回,否则后面会出错
-			rf.debug("在任期: [%d] 发给 [%d], Entries: [%+v]", oldTerm, x, args)
 			if !rf.peers[x].Call("Raft.AppendEntries", &args, &reply) {
 				return
 			}
 			// ---
-			rf.debug("在任期: [%d] 收到 [%d] 回复 [%+v]", rf.currentTerm, x, reply)
 			rf.mu.Lock()
+			rf.debug("在任期: [%d] 收到 [%d] 回复 [%+v]", rf.currentTerm, x, reply)
 			defer rf.mu.Unlock()
 			// 可以避免睡眠后不是Leader的情况
 			if reply.Term > rf.currentTerm {

@@ -19,6 +19,7 @@ import "math/big"
 import "encoding/base64"
 import "time"
 import "fmt"
+import "../util"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -168,7 +169,7 @@ func (cfg *config) start1(i int) {
 	applyCh := make(chan ApplyMsg)
 	go func() {
 		for m := range applyCh {
-			DPrintf("---m: %v", m)
+			util.DPrintf("---m: %v", m)
 			err_msg := ""
 			if m.CommandValid == false {
 				// ignore other types of ApplyMsg
@@ -230,12 +231,12 @@ func (cfg *config) cleanup() {
 	}
 	cfg.net.Cleanup()
 	cfg.checkTimeout()
-	DPrintf("Test End ----------------")
+	util.DPrintf("Test End ----------------")
 }
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	DPrintf("connect(%d)\n", i)
+	util.DPrintf("connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
@@ -258,7 +259,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	DPrintf("disconnect(%d)\n", i)
+	util.DPrintf("disconnect(%d)\n", i)
 
 	cfg.connected[i] = false
 
@@ -302,13 +303,13 @@ func (cfg *config) setlongreordering(longrel bool) {
 // check that there's exactly one leader.
 // try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
-	DPrintf("--- In checkOneLeader ---")
-	defer DPrintf("--- Out checkOneLeader ---")
+	util.DPrintf("--- In checkOneLeader ---")
+	defer util.DPrintf("--- Out checkOneLeader ---")
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
-		DPrintf("start sleep...")
+		util.DPrintf("start sleep...")
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-		DPrintf("end sleep...")
+		util.DPrintf("end sleep...")
 		leaders := make(map[int][]int)
 		for i := 0; i < cfg.n; i++ {
 			if cfg.connected[i] {
@@ -433,8 +434,8 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
-	DPrintf("--- In One ---")
-	defer DPrintf("--- Out One ---")
+	util.DPrintf("--- In One ---")
+	defer util.DPrintf("--- Out One ---")
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 {
@@ -475,7 +476,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
-			DPrintf("retry send")
+			util.DPrintf("retry send")
 		} else {
 			time.Sleep(50 * time.Millisecond)
 		}
