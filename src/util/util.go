@@ -2,6 +2,7 @@ package util
 
 import (
 	"log"
+	"math/rand"
 	"time"
 )
 
@@ -13,6 +14,11 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 		log.Printf(format, a...)
 	}
 	return
+}
+
+func GetRandomNum(a, b int) int {
+	rand.Seed(time.Now().UnixNano())
+	return a + rand.Intn(b-a+1)
 }
 
 // from log

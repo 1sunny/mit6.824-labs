@@ -39,9 +39,10 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	data     map[string]string
-	leaderId int
-	session  map[int64][]Reply
+	data         map[string]string
+	leaderId     int
+	replySession map[int64][]Reply // cid 已经执行过的回复
+	seqSession   map[int64]int64 // cid 最后执行的 seq 号
 }
 
 const serverDebug = 1
@@ -63,28 +64,36 @@ type Reply struct {
 func (kv *KVServer) receiveMsg(index, term int, cid, seq int64) bool {
 	for {
 		msg := <-kv.applyCh
-		kv.debug("接收到 Raft 消息: %+v", msg)
-		op, ok1 := msg.Command.(Op)
-		if !ok1 {
-			num, ok2 := msg.Command.(int)
-			if !ok2 || num != 0 { // no operation
-				log.Fatalf("Unknown Command")
-			}
-			continue
+		kv.debug("接收到 Raft 消息: {%+v}", msg)
+		if msg.Term > term { // fix BUG
+			return false
 		}
-		if op.Type == PUT {
-			kv.data[op.Key] = op.Value
-		} else if op.Type == APPEND {
-			kv.data[op.Key] += op.Value
+		op, ok := msg.Command.(Op)
+		if ok == false {
+			op = Op{}
+		}
+		// 同一 ** Client ** 执行过的操作不再执行
+		if op.Seq > kv.seqSession[op.Cid] { // fix BUG: if op.Seq > kv.seqSession[cid] {
+			kv.seqSession[op.Cid] = op.Seq
+			if op.Type == PUT {
+				kv.data[op.Key] = op.Value
+			} else if op.Type == APPEND {
+				kv.data[op.Key] += op.Value
+			}
+		} else {
+			kv.debug("检测到已添加过的操作: %+v", op)
 		}
 		if msg.CommandIndex == index {
+			if msg.Term < term {
+				log.Fatal("msg.Term < term")
+			}
 			return op.Cid == cid && op.Seq == seq
 		}
 	}
 }
 
 func (kv *KVServer) findReplyInSession(cid, seq int64) *Reply {
-	for _, re := range kv.session[cid] {
+	for _, re := range kv.replySession[cid] {
 		if re.cid == cid && re.seq == seq {
 			return &re
 		}
@@ -103,7 +112,7 @@ func (kv *KVServer) receiveFromRaft(opType string, key string, value string, cid
 }
 
 func (kv *KVServer) saveReply(cid int64, seq int64, content interface{}) {
-	kv.session[cid] = append(kv.session[cid], Reply{cid: cid, seq: seq, content: content})
+	kv.replySession[cid] = append(kv.replySession[cid], Reply{cid: cid, seq: seq, content: content})
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -111,20 +120,17 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	defer kv.mu.Unlock()
 	if re := kv.findReplyInSession(args.Cid, args.Seq); re != nil {
 		*reply = re.content.(GetReply)
-		reply.LeaderId = kv.leaderId
 		reply.Err = OK
 		kv.debug("收到已执行过的Get消息: %+v, 回复: %+v", args, reply)
 		return
 	}
 	if kv.receiveFromRaft(GET, args.Key, "", args.Cid, args.Seq) == ErrWrongLeader {
-		reply.LeaderId = kv.leaderId
 		reply.Err = ErrWrongLeader
 		kv.debug("不是Leader,拒绝消息: %+v", args)
 		return
 	}
 	value, ok := kv.data[args.Key]
 	reply.Value = value
-	reply.LeaderId = kv.me
 	if !ok {
 		reply.Err = ErrNoKey
 	} else {
@@ -139,18 +145,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.debug("收到消息: %+v", args)
 	if re := kv.findReplyInSession(args.Cid, args.Seq); re != nil {
 		*reply = re.content.(PutAppendReply)
-		reply.LeaderId = kv.leaderId
 		reply.Err = OK
 		kv.debug("执行过的消息: %+v", args)
 		return
 	}
 	if kv.receiveFromRaft(args.Op, args.Key, args.Value, args.Cid, args.Seq) == ErrWrongLeader {
-		reply.LeaderId = kv.leaderId
 		reply.Err = ErrWrongLeader
 		kv.debug("不是Leader,不处理: %+v", args)
 		return
 	}
-	reply.LeaderId = kv.me
 	reply.Err = OK
 	kv.debug("处理消息: %+v, 并回复: %+v", args, reply)
 	kv.saveReply(args.Cid, args.Seq, *reply)
@@ -195,7 +198,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-	util.DPrintf("server: %+v *******", servers)
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
@@ -208,6 +210,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.data = make(map[string]string)
 	kv.leaderId = -1
-	kv.session = make(map[int64][]Reply)
+	kv.replySession = make(map[int64][]Reply)
+	kv.seqSession = make(map[int64]int64)
 	return kv
 }

@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"sort"
 	"sync"
@@ -47,6 +46,8 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+
+	Term int
 }
 
 func (p ApplyMsg) String() string {
@@ -80,8 +81,8 @@ const raftDebug = 1
 
 // caller should hold rf.lock
 func (rf *Raft) debug(format string, a ...interface{}) {
-	var logger = log.New(os.Stdout, fmt.Sprintf("%s [%d:%v:%d:%d] ", util.GetTimeBuf(), rf.me, rf.state, rf.currentTerm, rf.commitIndex), 0)
 	if raftDebug > 0 {
+		var logger = log.New(os.Stdout, fmt.Sprintf("%s [%d:%v:%d:%d] ", util.GetTimeBuf(), rf.me, rf.state, rf.currentTerm, rf.commitIndex), 0)
 		logger.Printf(format, a...)
 	}
 }
@@ -140,7 +141,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logs)
-	rf.debug("持久数据 currentTerm: [%d], votedFor: [%d], 日志长度:[%d], logs: [%v]", rf.currentTerm, rf.votedFor, len(rf.logs), rf.logs)
+	rf.debug("持久数据 currentTerm: [%d], votedFor: [%d], 日志长度:[%d]", rf.currentTerm, rf.votedFor, len(rf.logs))
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -219,7 +220,7 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) restartElectionTimer() {
-	rf.randDuration = getRandomNum(ElectionTimeOutMin, ElectionTimeOutMax)
+	rf.randDuration = util.GetRandomNum(ElectionTimeOutMin, ElectionTimeOutMax)
 	rf.lastBeatTime = time.Now()
 }
 
@@ -458,16 +459,12 @@ func (rf *Raft) applyLogs() {
 			CommandValid: true,
 			Command:      rf.logs[rf.lastApplied].Cmd,
 			CommandIndex: rf.lastApplied,
+			Term: rf.logs[rf.lastApplied].Term,
 		}
 		rf.debug("提交 [%v]", msg)
 		rf.mu.Unlock() // fix BUG: 先释放锁,applyCh可能会阻塞 ?
 		rf.applyCh <- msg
 	}
-}
-
-func getRandomNum(a, b int) int {
-	rand.Seed(time.Now().UnixNano())
-	return a + rand.Intn(b-a+1)
 }
 
 func (rf *Raft) sendRequestVote() {
@@ -559,7 +556,7 @@ func (rf *Raft) receiveLogs(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 	// 截断日志将意味着“收回”我们可能已经告诉领导者我们的日志中的条目。
 	// Receiver implementation: #3 If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (§5.3)
-	rf.debug("变化前长度: [%d], logs: [%v] ", len(rf.logs), rf.logs)
+	rf.debug("变化前长度: [%d]", len(rf.logs))
 	j := 0
 	for i := prevIndex + 1; i < len(rf.logs); i++ {
 		if j >= len(args.Entries) { // fix BUG
@@ -577,7 +574,7 @@ func (rf *Raft) receiveLogs(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 	if j != len(args.Entries) {
 		rf.logs = append(rf.logs, args.Entries[j:]...)
 	}
-	rf.debug("变化后长度: [%d], logs: [%v] ", len(rf.logs), rf.logs)
+	rf.debug("变化后长度: [%d]", len(rf.logs))
 	return true
 }
 

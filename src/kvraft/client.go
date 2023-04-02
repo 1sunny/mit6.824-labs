@@ -42,7 +42,6 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	util.DPrintf("%+v *******", servers)
 	// You'll have to add code here.
 	ck.numServer = len(servers)
 	ck.cid = nrand()
@@ -68,23 +67,20 @@ func (ck *Clerk) Get(key string) string {
 	for i := ck.leaderId; ; {
 		args := GetArgs{Key: key, Cid: ck.cid, Seq: ck.seq}
 		reply := GetReply{}
-		ck.debug("向服务器 [%d] 发送 Get {%+v}", i, args)
+		ck.debug("向服务器发送 Get {%+v}", args)
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		ck.debug("收到服务器: %+v", reply)
-		if !ok || reply.LeaderId == -1 {
+		if ok == false || reply.Err == ErrWrongLeader {
 			i = (i + 1) % ck.numServer
 			continue
-		} else {
-			ck.leaderId = reply.LeaderId
-			i = ck.leaderId
-			ck.debug("设置 LeaderId 为: [%d]", ck.leaderId)
 		}
+		ck.leaderId = i
+		ck.debug("设置 LeaderId 为: [%d]", ck.leaderId)
 		if reply.Err == OK || reply.Err == ErrNoKey {
 			ck.debug("Get 返回 {%+v}", reply)
 			return reply.Value
-		}else if reply.Err != ErrWrongLeader {
-			log.Fatalf("Unknown Err")
 		}
+		log.Fatalf("Unknown Err")
 	}
 }
 
@@ -103,23 +99,20 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for i := ck.leaderId; ; {
 		args := PutAppendArgs{Key: key, Value: value, Op: op, Cid: ck.cid, Seq: ck.seq}
 		reply := PutAppendReply{}
-		ck.debug("向服务器 [%d] 发送 PutAppend {%+v}", i, args)
+		ck.debug("向服务器发送 PutAppend {%+v}", args)
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		ck.debug("收到服务器回复: %+v", reply)
-		// set leaderId, 请求到正确的 Leader 也确保它会返回自己的 ID
-		if !ok || reply.LeaderId == -1 {
+		if ok == false || reply.Err == ErrWrongLeader {
 			i = (i + 1) % ck.numServer
 			continue
-		} else {
-			ck.leaderId = reply.LeaderId
-			i = ck.leaderId
 		}
+		ck.leaderId = i
+		ck.debug("设置 LeaderId 为: [%d]", ck.leaderId)
 		if reply.Err == OK {
 			ck.debug("PutAppend 返回 %+v", reply)
 			return
-		} else if reply.Err != ErrWrongLeader {
-			log.Fatalf("Unknown Err")
 		}
+		log.Fatalf("Unknown Err")
 	}
 }
 

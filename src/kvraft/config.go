@@ -414,7 +414,7 @@ func (cfg *config) op() {
 // was no failure.
 // print the Passed message,
 // and some performance numbers.
-func (cfg *config) end() {
+func (cfg *config) end(description string) {
 	cfg.checkTimeout()
 	if cfg.t.Failed() == false {
 		t := time.Since(cfg.t0).Seconds()  // real time
@@ -422,7 +422,7 @@ func (cfg *config) end() {
 		nrpc := cfg.rpcTotal() - cfg.rpcs0 // number of RPC sends
 		ops := atomic.LoadInt32(&cfg.ops)  //  number of clerk get/put/append calls
 
-		fmt.Printf("  ... Passed --")
+		fmt.Printf(" %v ... Passed --", description)
 		fmt.Printf("  %4.1f  %d %5d %4d\n", t, npeers, nrpc, ops)
 	}
 }

@@ -244,14 +244,14 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		}
 
 		if crash {
-			// log.Printf("shutdown servers\n")
+			log.Printf("shutdown servers\n")
 			for i := 0; i < nservers; i++ {
 				cfg.ShutdownServer(i)
 			}
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
-			// log.Printf("restart servers\n")
+			log.Printf("restart servers\n")
 			// crash and re-start all
 			for i := 0; i < nservers; i++ {
 				cfg.StartServer(i)
@@ -259,9 +259,9 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			cfg.ConnectAll()
 		}
 
-		// log.Printf("wait for clients\n")
+		log.Printf("wait for clients\n")
 		for i := 0; i < nclients; i++ {
-			// log.Printf("read from clients %d\n", i)
+			log.Printf("read from clients %d\n", i)
 			j := <-clnts[i]
 			// if j < 10 {
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
@@ -289,7 +289,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		}
 	}
 
-	cfg.end()
+	cfg.end(title)
 }
 
 // similar to GenericTest, but with clients doing random operations (and using a
@@ -424,7 +424,7 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 		}
 	}
 
-	cfg.end()
+	cfg.end(title)
 
 	res, info := porcupine.CheckOperationsVerbose(models.KvModel, operations, linearizabilityCheckTimeout)
 	if res == porcupine.Illegal {
@@ -467,8 +467,8 @@ func TestUnreliableOneKey3A(t *testing.T) {
 	defer cfg.cleanup()
 
 	ck := cfg.makeClient(cfg.All())
-
-	cfg.begin("Test: concurrent append to same key, unreliable (3A)")
+	title := "Test: concurrent append to same key, unreliable (3A)"
+	cfg.begin(title)
 
 	Put(cfg, ck, "k", "")
 
@@ -490,7 +490,7 @@ func TestUnreliableOneKey3A(t *testing.T) {
 	vx := Get(cfg, ck, "k")
 	checkConcurrentAppends(t, vx, counts)
 
-	cfg.end()
+	cfg.end(title)
 }
 
 // Submit a request in the minority partition and check that the requests
@@ -506,7 +506,8 @@ func TestOnePartition3A(t *testing.T) {
 
 	Put(cfg, ck, "1", "13")
 
-	cfg.begin("Test: progress in majority (3A)")
+	title := "Test: progress in majority (3A)"
+	cfg.begin(title)
 
 	p1, p2 := cfg.make_partition()
 	cfg.partition(p1, p2)
@@ -518,12 +519,13 @@ func TestOnePartition3A(t *testing.T) {
 	Put(cfg, ckp1, "1", "14")
 	check(cfg, t, ckp1, "1", "14")
 
-	cfg.end()
+	cfg.end(title)
 
 	done0 := make(chan bool)
 	done1 := make(chan bool)
 
-	cfg.begin("Test: no progress in minority (3A)")
+	title = "Test: no progress in minority (3A)"
+	cfg.begin(title)
 	go func() {
 		Put(cfg, ckp2a, "1", "15")
 		done0 <- true
@@ -545,9 +547,10 @@ func TestOnePartition3A(t *testing.T) {
 	Put(cfg, ckp1, "1", "16")
 	check(cfg, t, ckp1, "1", "16")
 
-	cfg.end()
+	cfg.end(title)
 
-	cfg.begin("Test: completion after heal (3A)")
+	title = "Test: completion after heal (3A)"
+	cfg.begin(title)
 
 	cfg.ConnectAll()
 	cfg.ConnectClient(ckp2a, cfg.All())
@@ -570,7 +573,7 @@ func TestOnePartition3A(t *testing.T) {
 
 	check(cfg, t, ck, "1", "15")
 
-	cfg.end()
+	cfg.end(title)
 }
 
 func TestManyPartitionsOneClient3A(t *testing.T) {
@@ -627,7 +630,8 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.All())
 
-	cfg.begin("Test: InstallSnapshot RPC (3B)")
+	title := "Test: InstallSnapshot RPC (3B)"
+	cfg.begin(title)
 
 	Put(cfg, ck, "a", "A")
 	check(cfg, t, ck, "a", "A")
@@ -671,7 +675,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	check(cfg, t, ck, "e", "E")
 	check(cfg, t, ck, "1", "1")
 
-	cfg.end()
+	cfg.end(title)
 }
 
 // are the snapshots not too huge? 500 bytes is a generous bound for the
@@ -685,7 +689,8 @@ func TestSnapshotSize3B(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.All())
 
-	cfg.begin("Test: snapshot size is reasonable (3B)")
+	title := "Test: snapshot size is reasonable (3B)"
+	cfg.begin(title)
 
 	for i := 0; i < 200; i++ {
 		Put(cfg, ck, "x", "0")
@@ -706,7 +711,7 @@ func TestSnapshotSize3B(t *testing.T) {
 		t.Fatalf("snapshot too large (%v > %v)", ssz, maxsnapshotstate)
 	}
 
-	cfg.end()
+	cfg.end(title)
 }
 
 func TestSnapshotRecover3B(t *testing.T) {
