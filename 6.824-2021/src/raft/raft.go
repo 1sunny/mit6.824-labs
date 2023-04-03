@@ -35,7 +35,7 @@ import (
 	"6.824/labrpc"
 )
 
-const raftDebug = 0
+const raftDebug = 1
 
 // caller should hold rf.lock
 func (rf *Raft) debug(format string, a ...interface{}) {
@@ -398,7 +398,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term: term,
 		Cmd:  command,
 	})
-	rf.debug("*** 在任期 [%d] 收到命令index:[%d], 日志长度:[%d], 所有日志: [%v]", rf.currentTerm, index, len(rf.logs), rf.logs)
+	rf.debug("*** 在任期 [%d] 收到命令index:[%d]: %+v, 日志长度:[%d]", rf.currentTerm, index, command, len(rf.logs))
 	rf.persist()
 	return index, term, true
 }
@@ -594,7 +594,7 @@ func (rf *Raft) receiveLogs(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 	// 截断日志将意味着“收回”我们可能已经告诉领导者我们的日志中的条目。
 	// Receiver implementation: #3 If an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it (§5.3)
-	rf.debug("变化前长度: [%d]", len(rf.logs))
+	oldLogLen := len(rf.logs)
 	j := 0
 	for i := prevIndex + 1; i < len(rf.logs); i++ {
 		if j >= len(args.Entries) { // fix BUG
@@ -612,7 +612,7 @@ func (rf *Raft) receiveLogs(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 	if j != len(args.Entries) {
 		rf.logs = append(rf.logs, args.Entries[j:]...)
 	}
-	rf.debug("变化后长度: [%d]", len(rf.logs))
+	rf.debug("日志长度: [%d] -> [%d]", oldLogLen, len(rf.logs))
 	return true
 }
 
