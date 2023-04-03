@@ -11,7 +11,7 @@ import (
 import "crypto/rand"
 import "math/big"
 
-const clerkDebug = 0
+const clerkDebug = 1
 
 // caller should hold lock
 func (ck *Clerk) debug(format string, a ...interface{}) {

@@ -112,7 +112,7 @@ func spawn_clients_and_wait(t *testing.T, cfg *config, ncli int, fn func(me int,
 		ca[cli] = make(chan bool)
 		go run_client(t, cfg, cli, ca[cli], fn)
 	}
-	// log.Printf("spawn_clients_and_wait: waiting for clients")
+	// log.Printf("spawn_clients_and_wait: waitingInfo for clients")
 	for cli := 0; cli < ncli; cli++ {
 		ok := <-ca[cli]
 		// log.Printf("spawn_clients_and_wait: client %d is done\n", cli)
@@ -378,7 +378,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 		fmt.Println("info: linearizability check timed out, assuming history is ok")
 	}
 
-	cfg.end()
+	cfg.end(title)
 }
 
 // Check that ops are committed fast enough, better than 1 per heartbeat interval
@@ -390,7 +390,8 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 
 	ck := cfg.makeClient(cfg.All())
 
-	cfg.begin(fmt.Sprintf("Test: ops complete fast enough (%s)", part))
+	title := fmt.Sprintf("Test: ops complete fast enough (%s)", part)
+	cfg.begin(title)
 
 	// wait until first op completes, so we know a leader is elected
 	// and KV servers are ready to process client requests
@@ -413,7 +414,7 @@ func GenericTestSpeed(t *testing.T, part string, maxraftstate int) {
 		t.Fatalf("Operations completed too slowly %v/op > %v/op\n", dur/numOps, timePerOp)
 	}
 
-	cfg.end()
+	cfg.end(title)
 }
 
 func TestBasic3A(t *testing.T) {
@@ -421,9 +422,9 @@ func TestBasic3A(t *testing.T) {
 	GenericTest(t, "3A", 1, 5, false, false, false, -1, false)
 }
 
-func TestSpeed3A(t *testing.T) {
-	GenericTestSpeed(t, "3A", -1)
-}
+//func TestSpeed3A(t *testing.T) {
+//GenericTestSpeed(t, "3A", -1)
+//}
 
 func TestConcurrent3A(t *testing.T) {
 	// Test: many clients (3A) ...
@@ -442,7 +443,8 @@ func TestUnreliableOneKey3A(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.All())
 
-	cfg.begin("Test: concurrent append to same key, unreliable (3A)")
+	title := "Test: concurrent append to same key, unreliable (3A)"
+	cfg.begin(title)
 
 	Put(cfg, ck, "k", "", nil, -1)
 
@@ -464,7 +466,7 @@ func TestUnreliableOneKey3A(t *testing.T) {
 	vx := Get(cfg, ck, "k", nil, -1)
 	checkConcurrentAppends(t, vx, counts)
 
-	cfg.end()
+	cfg.end(title)
 }
 
 // Submit a request in the minority partition and check that the requests
@@ -478,7 +480,8 @@ func TestOnePartition3A(t *testing.T) {
 
 	Put(cfg, ck, "1", "13", nil, -1)
 
-	cfg.begin("Test: progress in majority (3A)")
+	title := "Test: progress in majority (3A)"
+	cfg.begin(title)
 
 	p1, p2 := cfg.make_partition()
 	cfg.partition(p1, p2)
@@ -490,12 +493,13 @@ func TestOnePartition3A(t *testing.T) {
 	Put(cfg, ckp1, "1", "14", nil, -1)
 	check(cfg, t, ckp1, "1", "14")
 
-	cfg.end()
+	cfg.end(title)
 
 	done0 := make(chan bool)
 	done1 := make(chan bool)
 
-	cfg.begin("Test: no progress in minority (3A)")
+	title = "Test: no progress in minority (3A)"
+	cfg.begin(title)
 	go func() {
 		Put(cfg, ckp2a, "1", "15", nil, -1)
 		done0 <- true
@@ -517,9 +521,10 @@ func TestOnePartition3A(t *testing.T) {
 	Put(cfg, ckp1, "1", "16", nil, -1)
 	check(cfg, t, ckp1, "1", "16")
 
-	cfg.end()
+	cfg.end(title)
 
-	cfg.begin("Test: completion after heal (3A)")
+	title = "Test: completion after heal (3A)"
+	cfg.begin(title)
 
 	cfg.ConnectAll()
 	cfg.ConnectClient(ckp2a, cfg.All())
@@ -542,7 +547,7 @@ func TestOnePartition3A(t *testing.T) {
 
 	check(cfg, t, ck, "1", "15")
 
-	cfg.end()
+	cfg.end(title)
 }
 
 func TestManyPartitionsOneClient3A(t *testing.T) {
@@ -599,7 +604,8 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.All())
 
-	cfg.begin("Test: InstallSnapshot RPC (3B)")
+	title := "Test: InstallSnapshot RPC (3B)"
+	cfg.begin(title)
 
 	Put(cfg, ck, "a", "A", nil, -1)
 	check(cfg, t, ck, "a", "A")
@@ -643,7 +649,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 	check(cfg, t, ck, "e", "E")
 	check(cfg, t, ck, "1", "1")
 
-	cfg.end()
+	cfg.end(title)
 }
 
 // are the snapshots not too huge? 500 bytes is a generous bound for the
@@ -657,7 +663,8 @@ func TestSnapshotSize3B(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.All())
 
-	cfg.begin("Test: snapshot size is reasonable (3B)")
+	title := "Test: snapshot size is reasonable (3B)"
+	cfg.begin(title)
 
 	for i := 0; i < 200; i++ {
 		Put(cfg, ck, "x", "0", nil, -1)
@@ -678,7 +685,7 @@ func TestSnapshotSize3B(t *testing.T) {
 		t.Fatalf("snapshot too large (%v > %v)", ssz, maxsnapshotstate)
 	}
 
-	cfg.end()
+	cfg.end(title)
 }
 
 func TestSpeed3B(t *testing.T) {

@@ -12,11 +12,11 @@ import (
 	"sync/atomic"
 )
 
-const serverDebug = 0
+const serverDebug = 1
 
 // caller should hold lock
 func (kv *KVServer) debug(format string, a ...interface{}) {
-	var logger = log.New(os.Stdout, fmt.Sprintf("%s Server[%d:%d] ", util.GetTimeBuf(), kv.me, kv.leaderId), 0)
+	var logger = log.New(os.Stdout, fmt.Sprintf("%s Server[%d] ", util.GetTimeBuf(), kv.me), 0)
 	if serverDebug > 0 {
 		logger.Printf(format, a...)
 	}
@@ -40,9 +40,16 @@ type Op struct {
 }
 
 type Reply struct {
-	cid     int64
-	seq     int64
-	content interface{}
+	seq   int64
+	value string
+	err   Err
+}
+
+type WaitingInfo struct {
+	cid       int64
+	seq       int64
+	term      int
+	replyChan chan Reply
 }
 
 type KVServer struct {
@@ -56,109 +63,149 @@ type KVServer struct {
 
 	// Your definitions here.
 	data         map[string]string
-	leaderId     int
+	waitingInfo  map[int]WaitingInfo
 	replySession map[int64][]Reply // cid 已经执行过的回复
-	seqSession   map[int64]int64   // cid 最后执行的 seq 号
+	maxSeqDone   map[int64]int64   // cid 最后执行的 seq 号
+	lastTerm     int
 }
 
-func (kv *KVServer) receiveMsg(index, term int, cid, seq int64) bool {
-	for {
-		msg := <-kv.applyCh
-		kv.debug("接收到 Raft 消息: {%+v}", msg)
-		if msg.Term > term { // fix BUG
-			return false
-		}
-		op, ok := msg.Command.(Op)
+func (kv *KVServer) exec(op *Op) (value string, err Err) {
+	if op.Type == GET {
+		v, ok := kv.data[op.Key]
 		if ok == false {
-			op = Op{}
+			return "", ErrNoKey
 		}
-		// 同一 ** Client ** 执行过的操作不再执行
-		if op.Seq > kv.seqSession[op.Cid] { // fix BUG: if op.Seq > kv.seqSession[cid] {
-			kv.seqSession[op.Cid] = op.Seq
-			if op.Type == PUT {
-				kv.data[op.Key] = op.Value
-			} else if op.Type == APPEND {
-				kv.data[op.Key] += op.Value
+		return v, OK
+	} else if op.Type == PUT {
+		kv.data[op.Key] = op.Value
+	} else if op.Type == APPEND {
+		kv.data[op.Key] += op.Value
+	}
+	return "", OK
+}
+
+func (kv *KVServer) receiveApplyMsg() {
+	for kv.killed() == false {
+		msg := <-kv.applyCh
+		kv.mu.Lock()
+		kv.debug("接收到 Raft 消息: {%+v}", msg)
+		if msg.CommandValid {
+			op, ok := msg.Command.(Op)
+			if ok == false { // NoOp
+				//continue // fix BUG
+				op = Op{}
+			}
+			cid, seq := op.Cid, op.Seq
+			var re Reply
+			if seq != 0 {
+				// ** 同一Client ** 执行过的操作不再执行
+				if seq > kv.maxSeqDone[cid] { // fix BUG: if op.Seq > kv.maxSeqDone[cid] {
+					kv.maxSeqDone[cid] = seq
+					re.seq = seq
+					re.value, re.err = kv.exec(&op)
+					// save reply
+					kv.replySession[cid] = append(kv.replySession[cid], re)
+				} else {
+					pReply := kv.findReplyInSession(cid, seq)
+					if pReply == nil {
+						log.Fatal("pReply == nil")
+					}
+					re = *pReply
+				}
+			}
+			// 尝试获取等待该 index 的请求信息
+			info, ok := kv.waitingInfo[msg.CommandIndex]
+			if ok {
+				kv.debug("info: %+v", info)
+				delete(kv.waitingInfo, msg.CommandIndex)
+				kv.debug("删除键: [%d]", msg.CommandIndex)
+				reply := re
+				if info.cid != cid || info.seq != seq { // leader has changed
+					reply = Reply{err: ErrWrongLeader}
+				}
+				kv.debug("发送回复到 index: %v, chan: %v, : %v", msg.CommandIndex, info.replyChan, reply)
+				select {
+				case info.replyChan <- reply:
+				}
+			}
+			raftTerm, _ := kv.rf.GetState()
+			if kv.lastTerm < raftTerm { // term has changed, may be leader has changed too
+				kv.lastTerm = raftTerm
+				var toDelete []int
+				for k, v := range kv.waitingInfo {
+					kv.debug("K: %+v, V: %+v", k, v)
+					if v.term < raftTerm {
+						kv.debug("term 发送回复到 index: %v, chan: %v, : %v", k, v.replyChan, Reply{err: ErrWrongLeader})
+						select {
+						case v.replyChan <- Reply{err: ErrWrongLeader}: // fix BUG: info.replyChan -> v.replyChan
+						}
+						toDelete = append(toDelete, k)
+					}
+				}
+				for _, index := range toDelete {
+					delete(kv.waitingInfo, index)
+					kv.debug("删除键: [%d]", index)
+				}
 			}
 		} else {
-			kv.debug("检测到已添加过的操作: %+v", op)
+
 		}
-		if msg.CommandIndex == index {
-			if msg.Term < term {
-				log.Fatal("msg.Term < term")
-			}
-			return op.Cid == cid && op.Seq == seq
-		}
+		kv.mu.Unlock()
 	}
 }
 
 func (kv *KVServer) findReplyInSession(cid, seq int64) *Reply {
 	for _, re := range kv.replySession[cid] {
-		if re.cid == cid && re.seq == seq {
+		if re.seq == seq {
 			return &re
 		}
 	}
 	return nil
 }
 
-func (kv *KVServer) receiveFromRaft(opType string, key string, value string, cid int64, seq int64) string {
+func (kv *KVServer) handleRequest(opType, key, value string, cid, seq int64) (v string, err Err) {
+	kv.mu.Lock()
+	kv.debug("收到消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}", opType, key, value, cid, seq)
+	if re := kv.findReplyInSession(cid, seq); re != nil {
+		kv.debug("处理过的消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}", opType, key, value, cid, seq)
+		kv.mu.Unlock()
+		return re.value, re.err
+	}
+
 	op := Op{Type: opType, Key: key, Value: value, Cid: cid, Seq: seq}
 	kv.debug("*** 尝试发送给Raft {%+v}", op)
-	index, term, isLeader := kv.rf.Start(op)
-	if isLeader == false || kv.receiveMsg(index, term, cid, seq) == false {
-		return ErrWrongLeader
+	index, term, leader := kv.rf.Start(op)
+	if leader == false {
+		kv.mu.Unlock()
+		return "", ErrWrongLeader
 	}
-	return OK
-}
+	replyCh := make(chan Reply)
+	kv.debug("开启 index: %v, chan: %v", index, replyCh)
+	kv.waitingInfo[index] = WaitingInfo{cid: cid, seq: seq, term: term, replyChan: replyCh}
+	kv.mu.Unlock()
 
-func (kv *KVServer) saveReply(cid int64, seq int64, content interface{}) {
-	kv.replySession[cid] = append(kv.replySession[cid], Reply{cid: cid, seq: seq, content: content})
+	var retv string
+	var rete Err
+	select {
+	case re := <-replyCh:
+		retv, rete = re.value, re.err
+	}
+	kv.mu.Lock()
+	close(replyCh)
+	kv.debug("关闭 index: %v, chan: %v", index, replyCh)
+	kv.debug("回复消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}: {value: %v, err: %v}", opType, key, value, cid, seq, retv, rete)
+	kv.mu.Unlock()
+	return retv, rete
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	if re := kv.findReplyInSession(args.Cid, args.Seq); re != nil {
-		*reply = re.content.(GetReply)
-		reply.Err = OK
-		kv.debug("收到已执行过的Get消息: %+v, 回复: %+v", args, reply)
-		return
-	}
-	if kv.receiveFromRaft(GET, args.Key, "", args.Cid, args.Seq) == ErrWrongLeader {
-		reply.Err = ErrWrongLeader
-		kv.debug("不是Leader,拒绝消息: %+v", args)
-		return
-	}
-	value, ok := kv.data[args.Key]
-	reply.Value = value
-	if !ok {
-		reply.Err = ErrNoKey
-	} else {
-		reply.Err = OK
-	}
-	kv.saveReply(args.Cid, args.Seq, *reply)
+	reply.Value, reply.Err = kv.handleRequest(GET, args.Key, "", args.Cid, args.Seq)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	kv.debug("收到消息: %+v", args)
-	if re := kv.findReplyInSession(args.Cid, args.Seq); re != nil {
-		*reply = re.content.(PutAppendReply)
-		reply.Err = OK
-		kv.debug("执行过的消息: %+v", args)
-		return
-	}
-	if kv.receiveFromRaft(args.Op, args.Key, args.Value, args.Cid, args.Seq) == ErrWrongLeader {
-		reply.Err = ErrWrongLeader
-		kv.debug("不是Leader,不处理: %+v", args)
-		return
-	}
-	reply.Err = OK
-	kv.debug("处理消息: %+v, 并回复: %+v", args, reply)
-	kv.saveReply(args.Cid, args.Seq, *reply)
+	_, reply.Err = kv.handleRequest(args.Op, args.Key, args.Value, args.Cid, args.Seq)
 }
 
 //
@@ -212,8 +259,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.data = make(map[string]string)
-	kv.leaderId = -1
+	kv.waitingInfo = make(map[int]WaitingInfo)
 	kv.replySession = make(map[int64][]Reply)
-	kv.seqSession = make(map[int64]int64)
+	kv.maxSeqDone = make(map[int64]int64)
+	kv.lastTerm = 1
+
+	go kv.receiveApplyMsg()
 	return kv
 }

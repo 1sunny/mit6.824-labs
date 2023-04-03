@@ -1,6 +1,10 @@
 package kvraft
 
-import "6.824/labrpc"
+import (
+	"6.824/labrpc"
+	"6.824/util"
+	"log"
+)
 import "testing"
 import "os"
 
@@ -163,6 +167,7 @@ func (cfg *config) All() []int {
 }
 
 func (cfg *config) ConnectAll() {
+	util.DPrintf("ConnectAll")
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 	for i := 0; i < cfg.n; i++ {
@@ -174,7 +179,7 @@ func (cfg *config) ConnectAll() {
 func (cfg *config) partition(p1 []int, p2 []int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
-	// log.Printf("partition servers into: %v %v\n", p1, p2)
+	log.Printf("partition servers into: %v %v\n", p1, p2)
 	for i := 0; i < len(p1); i++ {
 		cfg.disconnectUnlocked(p1[i], p2)
 		cfg.connectUnlocked(p1[i], p1)
@@ -411,7 +416,7 @@ func (cfg *config) op() {
 // was no failure.
 // print the Passed message,
 // and some performance numbers.
-func (cfg *config) end() {
+func (cfg *config) end(title string) {
 	cfg.checkTimeout()
 	if cfg.t.Failed() == false {
 		t := time.Since(cfg.t0).Seconds()  // real time
@@ -419,7 +424,7 @@ func (cfg *config) end() {
 		nrpc := cfg.rpcTotal() - cfg.rpcs0 // number of RPC sends
 		ops := atomic.LoadInt32(&cfg.ops)  //  number of clerk get/put/append calls
 
-		fmt.Printf("  ... Passed --")
+		fmt.Printf(" %v ... Passed --", title)
 		fmt.Printf("  %4.1f  %d %5d %4d\n", t, npeers, nrpc, ops)
 	}
 }

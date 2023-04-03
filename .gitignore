@@ -1,5 +1,6 @@
 pkg/
 api.key
 *-handin.tar.gz
-.idea/
+**/**/.idea/
 **/**/*.log
+**/**/tester
