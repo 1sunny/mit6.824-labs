@@ -169,17 +169,11 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var logs []Log
-	if err := d.Decode(&currentTerm); err != nil {
-		log.Printf("读取currentTerm失败: [%v]", err)
-		return
-	}
-	if err := d.Decode(&votedFor); err != nil {
-		log.Printf("读取votedFor失败: [%v]", err)
-		return
-	}
-	if err := d.Decode(&logs); err != nil {
-		log.Printf("读取logs失败: [%v]", err)
-		return
+	e1 := d.Decode(&currentTerm)
+	e2 := d.Decode(&votedFor)
+	e3 := d.Decode(&logs)
+	if e1 != nil || e2 != nil || e3 != nil {
+		log.Fatal("readPersist Error")
 	}
 	rf.currentTerm = currentTerm
 	rf.votedFor = votedFor
@@ -294,6 +288,7 @@ func (rf *Raft) toLeader() {
 	rf.debug("初始化所有 nextIndex 为 [%d]", len(rf.logs))
 	for i := range rf.peers {
 		rf.nextIndex[i] = len(rf.logs) - 1 // 因为最新的 NoOp其它节点肯定没有,所以-1
+		rf.matchIndex[i] = 0               // fix BUG: lab3时因为这个在 TestManyPartitionsManyClients3A 出现了错误!
 	}
 	rf.matchIndex[rf.me] = len(rf.logs) - 1
 }
@@ -670,7 +665,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) majorityMatchIndex() int {
 	indexes := make([]int, rf.numPeer)
 	copy(indexes, rf.matchIndex)
+	rf.debug("排序前: %v", indexes)
 	sort.Ints(indexes)
+	rf.debug("排序后: %v", indexes)
 	return indexes[rf.numPeer/2]
 }
 
