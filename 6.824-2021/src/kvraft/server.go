@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const serverDebug = 1
@@ -23,9 +24,10 @@ func (kv *KVServer) debug(format string, a ...interface{}) {
 }
 
 const (
-	GET    = "Get"
-	PUT    = "Put"
-	APPEND = "Append"
+	GET            = "Get"
+	PUT            = "Put"
+	APPEND         = "Append"
+	RequestTimeOut = (raft.ElectionTimeOutMin + raft.ElectionTimeOutMax) / 2
 )
 
 type Op struct {
@@ -62,11 +64,16 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	data         map[string]string
-	waitingInfo  map[int]WaitingInfo
-	replySession map[int64][]Reply // cid 已经执行过的回复
-	maxSeqDone   map[int64]int64   // cid 最后执行的 seq 号
-	lastTerm     int
+	data        map[string]string
+	waitingInfo map[int]WaitingInfo
+	//  one table entry per client, rather than one per RPC
+	//  each client has only one RPC outstanding at a time
+	//  each client numbers RPCs sequentially
+	//  when server receives client RPC #10,
+	//    it can forget about client's lower entries
+	//    since this means client won't ever re-send older RPCs
+	dupTable map[int64]Reply
+	lastTerm int
 }
 
 func (kv *KVServer) exec(op *Op) (value string, err Err) {
@@ -78,98 +85,74 @@ func (kv *KVServer) exec(op *Op) (value string, err Err) {
 		return v, OK
 	} else if op.Type == PUT {
 		kv.data[op.Key] = op.Value
+		kv.debug("PUT %v = %v", op.Key, kv.data[op.Key])
 	} else if op.Type == APPEND {
 		kv.data[op.Key] += op.Value
+		kv.debug("APPEND %v = %v", op.Key, kv.data[op.Key])
 	}
 	return "", OK
 }
 
-func (kv *KVServer) receiveApplyMsg() {
+func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
+	kv.mu.Lock()
+	kv.debug("接收到 Raft apply 消息: {%+v}", msg)
+	op, ok := msg.Command.(Op)
+	if ok == false { // NoOp
+		op = Op{}
+	}
+	cid, seq := op.Cid, op.Seq
+	var reply Reply
+	if seq != 0 {
+		// ** 同一Client ** 执行过的操作不再执行
+		if seq > kv.dupTable[cid].seq { // fix BUG: if op.Seq > kv.maxSeqDone[cid] {
+			reply.seq = seq
+			reply.value, reply.err = kv.exec(&op)
+			// save reply
+			kv.dupTable[cid] = reply
+		} else if seq == kv.dupTable[cid].seq {
+			reply = kv.dupTable[cid]
+		} else {
+			util.Assert(false, "No Reply found !!!")
+		}
+	}
+	rfTerm, isLeader := kv.rf.GetState()
+	// 尝试获取等待该 index 的请求信息
+	info, ok := kv.waitingInfo[msg.CommandIndex]
+	if ok {
+		delete(kv.waitingInfo, msg.CommandIndex)
+		kv.debug("删除键值: [%d:%+v], ", msg.CommandIndex, info)
+		if rfTerm != msg.Term || isLeader == false ||
+			info.cid != cid || info.seq != seq { // leader has changed
+			reply = Reply{err: ErrWrongLeader}
+		}
+		kv.debug("发送回复到 index: %v, chan: %v, : %v", msg.CommandIndex, info.replyChan, reply)
+		select {
+		case info.replyChan <- reply:
+		case <-time.After(10 * time.Millisecond): // 防止请求由于超时已经返回,没有接收端而导致阻塞
+			kv.debug("可能由于超时,请求: %+v 已经返回", info)
+		}
+	}
+	kv.mu.Unlock()
+}
+
+func (kv *KVServer) receiveRaftMsg() {
 	for kv.killed() == false {
 		msg := <-kv.applyCh
-		kv.mu.Lock()
-		kv.debug("接收到 Raft 消息: {%+v}", msg)
 		if msg.CommandValid {
-			op, ok := msg.Command.(Op)
-			if ok == false { // NoOp
-				//continue // fix BUG
-				op = Op{}
-			}
-			cid, seq := op.Cid, op.Seq
-			var re Reply
-			if seq != 0 {
-				// ** 同一Client ** 执行过的操作不再执行
-				if seq > kv.maxSeqDone[cid] { // fix BUG: if op.Seq > kv.maxSeqDone[cid] {
-					kv.maxSeqDone[cid] = seq
-					re.seq = seq
-					re.value, re.err = kv.exec(&op)
-					// save reply
-					kv.replySession[cid] = append(kv.replySession[cid], re)
-				} else {
-					pReply := kv.findReplyInSession(cid, seq)
-					if pReply == nil {
-						log.Fatal("pReply == nil")
-					}
-					re = *pReply
-				}
-			}
-			// 尝试获取等待该 index 的请求信息
-			info, ok := kv.waitingInfo[msg.CommandIndex]
-			if ok {
-				kv.debug("info: %+v", info)
-				delete(kv.waitingInfo, msg.CommandIndex)
-				kv.debug("删除键: [%d]", msg.CommandIndex)
-				reply := re
-				if info.cid != cid || info.seq != seq { // leader has changed
-					reply = Reply{err: ErrWrongLeader}
-				}
-				kv.debug("发送回复到 index: %v, chan: %v, : %v", msg.CommandIndex, info.replyChan, reply)
-				select {
-				case info.replyChan <- reply:
-				}
-			}
-			raftTerm, _ := kv.rf.GetState()
-			if kv.lastTerm < raftTerm { // term has changed, may be leader has changed too
-				kv.lastTerm = raftTerm
-				var toDelete []int
-				for k, v := range kv.waitingInfo {
-					kv.debug("K: %+v, V: %+v", k, v)
-					if v.term < raftTerm {
-						kv.debug("term 发送回复到 index: %v, chan: %v, : %v", k, v.replyChan, Reply{err: ErrWrongLeader})
-						select {
-						case v.replyChan <- Reply{err: ErrWrongLeader}: // fix BUG: info.replyChan -> v.replyChan
-						}
-						toDelete = append(toDelete, k)
-					}
-				}
-				for _, index := range toDelete {
-					delete(kv.waitingInfo, index)
-					kv.debug("删除键: [%d]", index)
-				}
-			}
+			kv.applyOp(&msg)
 		} else {
 
 		}
-		kv.mu.Unlock()
 	}
-}
-
-func (kv *KVServer) findReplyInSession(cid, seq int64) *Reply {
-	for _, re := range kv.replySession[cid] {
-		if re.seq == seq {
-			return &re
-		}
-	}
-	return nil
 }
 
 func (kv *KVServer) handleRequest(opType, key, value string, cid, seq int64) (v string, err Err) {
 	kv.mu.Lock()
 	kv.debug("收到消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}", opType, key, value, cid, seq)
-	if re := kv.findReplyInSession(cid, seq); re != nil {
+	if reply := kv.dupTable[cid]; reply.seq == seq {
 		kv.debug("处理过的消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}", opType, key, value, cid, seq)
 		kv.mu.Unlock()
-		return re.value, re.err
+		return reply.value, reply.err
 	}
 
 	op := Op{Type: opType, Key: key, Value: value, Cid: cid, Seq: seq}
@@ -180,19 +163,18 @@ func (kv *KVServer) handleRequest(opType, key, value string, cid, seq int64) (v 
 		return "", ErrWrongLeader
 	}
 	replyCh := make(chan Reply)
-	kv.debug("开启 index: %v, chan: %v", index, replyCh)
 	kv.waitingInfo[index] = WaitingInfo{cid: cid, seq: seq, term: term, replyChan: replyCh}
 	kv.mu.Unlock()
 
 	var retv string
 	var rete Err
 	select {
-	case re := <-replyCh:
-		retv, rete = re.value, re.err
+	case reply := <-replyCh:
+		retv, rete = reply.value, reply.err
+	case <-time.After(RequestTimeOut * time.Millisecond):
+		rete = ErrWrongLeader
 	}
 	kv.mu.Lock()
-	close(replyCh)
-	kv.debug("关闭 index: %v, chan: %v", index, replyCh)
 	kv.debug("回复消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}: {value: %v, err: %v}", opType, key, value, cid, seq, retv, rete)
 	kv.mu.Unlock()
 	return retv, rete
@@ -260,10 +242,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.data = make(map[string]string)
 	kv.waitingInfo = make(map[int]WaitingInfo)
-	kv.replySession = make(map[int64][]Reply)
-	kv.maxSeqDone = make(map[int64]int64)
+	kv.dupTable = make(map[int64]Reply)
 	kv.lastTerm = 1
 
-	go kv.receiveApplyMsg()
+	go kv.receiveRaftMsg()
 	return kv
 }
