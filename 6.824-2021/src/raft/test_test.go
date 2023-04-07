@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
+import (
+	"6.824/util"
+	"testing"
+)
 import "fmt"
 import "time"
 import "math/rand"
@@ -1022,6 +1025,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
+		util.DPrintf("iters: [%d]", i)
 		victim := (leader1 + 1) % servers
 		sender := leader1
 		if i%3 == 1 {
@@ -1083,4 +1087,91 @@ func TestSnapshotInstallCrash2D(t *testing.T) {
 
 func TestSnapshotInstallUnCrash2D(t *testing.T) {
 	snapcommon(t, "Test (2D): install snapshots (unreliable+crash)", false, false, true)
+}
+
+// do the servers persist the snapshots, and
+// restart using snapshot along with the
+// tail of the log?
+func TestSnapshotAllCrash2D(t *testing.T) {
+	servers := 3
+	iters := 5
+	cfg := make_config(t, servers, false, true)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2D): crash and restart all servers")
+
+	cfg.one(rand.Int(), servers, true)
+
+	for i := 0; i < iters; i++ {
+		// perhaps enough to get a snapshot
+		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
+		for i := 0; i < nn; i++ {
+			cfg.one(rand.Int(), servers, true)
+		}
+
+		index1 := cfg.one(rand.Int(), servers, true)
+
+		// crash all
+		for i := 0; i < servers; i++ {
+			cfg.crash1(i)
+		}
+
+		// revive all
+		for i := 0; i < servers; i++ {
+			cfg.start1(i, cfg.applierSnap)
+			cfg.connect(i)
+		}
+
+		index2 := cfg.one(rand.Int(), servers, true)
+		if index2 < index1+1 {
+			t.Fatalf("index decreased from %v to %v", index1, index2)
+		}
+	}
+	cfg.end()
+}
+
+// do servers correctly initialize their in-memory copy of the snapshot, making
+// sure that future writes to persistent state don't lose state?
+func TestSnapshotInit2D(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false, true)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2D): snapshot initialization after crash")
+	cfg.one(rand.Int(), servers, true)
+
+	// enough ops to make a snapshot
+	nn := SnapShotInterval + 1
+	for i := 0; i < nn; i++ {
+		cfg.one(rand.Int(), servers, true)
+	}
+
+	// crash all
+	for i := 0; i < servers; i++ {
+		cfg.crash1(i)
+	}
+
+	// revive all
+	for i := 0; i < servers; i++ {
+		cfg.start1(i, cfg.applierSnap)
+		cfg.connect(i)
+	}
+
+	// a single op, to get something to be written back to persistent storage.
+	cfg.one(rand.Int(), servers, true)
+
+	// crash all
+	for i := 0; i < servers; i++ {
+		cfg.crash1(i)
+	}
+
+	// revive all
+	for i := 0; i < servers; i++ {
+		cfg.start1(i, cfg.applierSnap)
+		cfg.connect(i)
+	}
+
+	// do another op to trigger potential bug
+	cfg.one(rand.Int(), servers, true)
+	cfg.end()
 }

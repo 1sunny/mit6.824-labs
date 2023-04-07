@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "6.824/labgob"
+import (
+	"6.824/labgob"
+	"6.824/util"
+)
 import "6.824/labrpc"
 import "bytes"
 import "log"
@@ -103,6 +106,7 @@ func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
 
 // shut down a Raft server but save its persistent state.
 func (cfg *config) crash1(i int) {
+	util.DPrintf("crash1 [%d]", i)
 	cfg.disconnect(i)
 	cfg.net.DeleteServer(i) // disable client connections to the server.
 
@@ -238,6 +242,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 // this server. since we cannot really kill it.
 //
 func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
+	util.DPrintf("start1 [%d]", i)
 	cfg.crash1(i)
 
 	// a fresh set of outgoing ClientEnd names.
@@ -303,7 +308,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
+	util.DPrintf("connect(%d)\n", i)
 
 	cfg.connected[i] = true
 
@@ -326,7 +331,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	// fmt.Printf("disconnect(%d)\n", i)
+	util.DPrintf("disconnect(%d)\n", i)
 
 	cfg.connected[i] = false
 
@@ -370,6 +375,8 @@ func (cfg *config) setlongreordering(longrel bool) {
 // check that there's exactly one leader.
 // try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
+	util.DPrintf("---- In checkOneLeader ----")
+	defer util.DPrintf("---- Out checkOneLeader ----")
 	for iters := 0; iters < 10; iters++ {
 		ms := 450 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -498,6 +505,8 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
+	util.DPrintf("----- In One ----")
+	defer util.DPrintf("----- Out One ----")
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 {
