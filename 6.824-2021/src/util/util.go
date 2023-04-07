@@ -16,6 +16,18 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+func Clone(orig []byte) []byte {
+	x := make([]byte, len(orig))
+	copy(x, orig)
+	return x
+}
+
+func Assert(condition bool, message string) {
+	if !condition {
+		panic(message)
+	}
+}
+
 func GetRandomNum(a, b int) int {
 	rand.Seed(time.Now().UnixNano())
 	return a + rand.Intn(b-a+1)
