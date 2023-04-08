@@ -5,6 +5,7 @@ import (
 	"6.824/labrpc"
 	"6.824/raft"
 	"6.824/util"
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -24,10 +25,11 @@ func (kv *KVServer) debug(format string, a ...interface{}) {
 }
 
 const (
-	GET            = "Get"
-	PUT            = "Put"
-	APPEND         = "Append"
-	RequestTimeOut = (raft.ElectionTimeOutMin + raft.ElectionTimeOutMax) / 2
+	GET             = "Get"
+	PUT             = "Put"
+	APPEND          = "Append"
+	RequestTimeOut  = (raft.ElectionTimeOutMin + raft.ElectionTimeOutMax) / 2 * time.Millisecond
+	SnapShotTimeOut = raft.HeartBeatTimeOut * 4
 )
 
 type Op struct {
@@ -42,9 +44,9 @@ type Op struct {
 }
 
 type Reply struct {
-	seq   int64
-	value string
-	err   Err
+	Seq   int64
+	Value string
+	Err   Err
 }
 
 type WaitingInfo struct {
@@ -72,8 +74,8 @@ type KVServer struct {
 	//  when server receives client RPC #10,
 	//    it can forget about client's lower entries
 	//    since this means client won't ever re-send older RPCs
-	dupTable map[int64]Reply
-	lastTerm int
+	dupTable    map[int64]Reply
+	lastApplied int
 }
 
 func (kv *KVServer) exec(op *Op) (value string, err Err) {
@@ -104,12 +106,13 @@ func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
 	var reply Reply
 	if seq != 0 {
 		// ** 同一Client ** 执行过的操作不再执行
-		if seq > kv.dupTable[cid].seq { // fix BUG: if op.Seq > kv.maxSeqDone[cid] {
-			reply.seq = seq
-			reply.value, reply.err = kv.exec(&op)
+		if seq > kv.dupTable[cid].Seq {
+			reply.Seq = seq
+			reply.Value, reply.Err = kv.exec(&op)
+			kv.lastApplied = msg.CommandIndex
 			// save reply
 			kv.dupTable[cid] = reply
-		} else if seq == kv.dupTable[cid].seq {
+		} else if seq == kv.dupTable[cid].Seq {
 			reply = kv.dupTable[cid]
 		} else {
 			util.Assert(false, "No Reply found !!!")
@@ -123,7 +126,7 @@ func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
 		kv.debug("删除键值: [%d:%+v], ", msg.CommandIndex, info)
 		if rfTerm != msg.Term || isLeader == false ||
 			info.cid != cid || info.seq != seq { // leader has changed
-			reply = Reply{err: ErrWrongLeader}
+			reply = Reply{Err: ErrWrongLeader}
 		}
 		kv.debug("发送回复到 index: %v, chan: %v, : %v", msg.CommandIndex, info.replyChan, reply)
 		select {
@@ -135,24 +138,64 @@ func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
 	kv.mu.Unlock()
 }
 
-func (kv *KVServer) receiveRaftMsg() {
+func (kv *KVServer) applySnapShot(msg *raft.ApplyMsg) {
+	kv.mu.Lock()
+	r := bytes.NewBuffer(msg.Snapshot)
+	d := labgob.NewDecoder(r)
+	e1 := d.Decode(&kv.dupTable)
+	e2 := d.Decode(&kv.data)
+	util.Assert(e1 == nil && e2 == nil, "applySnapShot Error")
+	kv.lastApplied = msg.SnapshotIndex
+	kv.debug("Apply SnapShot, data: %+v", kv.data)
+	kv.debug("Apply SnapShot, dupTable: %+v", kv.dupTable)
+	kv.debug("Apply SnapShot, lastApplied: %v", kv.lastApplied)
+	kv.mu.Unlock()
+}
+
+func (kv *KVServer) raftReceiver() {
 	for kv.killed() == false {
 		msg := <-kv.applyCh
 		if msg.CommandValid {
 			kv.applyOp(&msg)
+		} else if msg.SnapshotValid {
+			kv.applySnapShot(&msg)
 		} else {
-
+			util.Assert(false, "Message Invalid")
 		}
+	}
+}
+
+func (kv *KVServer) KVState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.dupTable)
+	e.Encode(kv.data)
+	return w.Bytes()
+}
+
+func (kv *KVServer) snapshoter() {
+	for kv.killed() == false && kv.maxraftstate != -1 {
+		time.Sleep(SnapShotTimeOut)
+		kv.mu.Lock()
+		kv.debug("Check Snapshot ?")
+		if kv.rf.Persister.RaftStateSize() > kv.maxraftstate {
+			kv.debug("Do Snapshot !")
+			kv.rf.Snapshot(kv.lastApplied, kv.KVState())
+			kv.debug("SnapShot, data: %+v", kv.data)
+			kv.debug("SnapShot, dupTable: %+v", kv.dupTable)
+			kv.debug("SnapShot, lastApplied: %v", kv.lastApplied)
+		}
+		kv.mu.Unlock()
 	}
 }
 
 func (kv *KVServer) handleRequest(opType, key, value string, cid, seq int64) (v string, err Err) {
 	kv.mu.Lock()
 	kv.debug("收到消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}", opType, key, value, cid, seq)
-	if reply := kv.dupTable[cid]; reply.seq == seq {
+	if reply := kv.dupTable[cid]; reply.Seq == seq {
 		kv.debug("处理过的消息: {type: %v, key: %v, value: %v, cid: %v, seq: %v}", opType, key, value, cid, seq)
 		kv.mu.Unlock()
-		return reply.value, reply.err
+		return reply.Value, reply.Err
 	}
 
 	op := Op{Type: opType, Key: key, Value: value, Cid: cid, Seq: seq}
@@ -170,8 +213,8 @@ func (kv *KVServer) handleRequest(opType, key, value string, cid, seq int64) (v 
 	var rete Err
 	select {
 	case reply := <-replyCh:
-		retv, rete = reply.value, reply.err
-	case <-time.After(RequestTimeOut * time.Millisecond):
+		retv, rete = reply.Value, reply.Err
+	case <-time.After(RequestTimeOut):
 		rete = ErrWrongLeader
 	}
 	kv.mu.Lock()
@@ -243,8 +286,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.data = make(map[string]string)
 	kv.waitingInfo = make(map[int]WaitingInfo)
 	kv.dupTable = make(map[int64]Reply)
-	kv.lastTerm = 1
 
-	go kv.receiveRaftMsg()
+	go kv.raftReceiver()
+	go kv.snapshoter()
 	return kv
 }

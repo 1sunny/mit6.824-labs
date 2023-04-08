@@ -87,8 +87,8 @@ const (
 	NoOp                        = 0
 	ElectionTimeOutMax          = 500
 	ElectionTimeOutMin          = 300
-	HeartBeatTimeOut            = 50
-	ElectionCheckInterval       = 20
+	HeartBeatTimeOut            = (ElectionTimeOutMax - ElectionTimeOutMin) / 4 * time.Millisecond
+	ElectionCheckInterval       = 20 * time.Millisecond
 )
 
 type Log struct {
@@ -372,7 +372,7 @@ func (rf *Raft) startElection() {
 		rf.mu.Lock()
 		for rf.state == LEADER || !rf.timeout() {
 			rf.mu.Unlock()
-			time.Sleep(ElectionCheckInterval * time.Millisecond)
+			time.Sleep(ElectionCheckInterval)
 			rf.mu.Lock()
 		}
 		rf.toCandidate()
@@ -710,7 +710,7 @@ func (rf *Raft) appendEntriesTicker() {
 		// The tester requires that the leader send heartbeat RPCs no more than ten times per second.
 		// Because the tester limits you to 10 heartbeats per second, you will have to use an election timeout larger
 		// than the paper’s 150 to 300 milliseconds, but not too large, because then you may fail to elect a leader within five seconds.
-		time.Sleep(HeartBeatTimeOut * time.Millisecond)
+		time.Sleep(HeartBeatTimeOut)
 		rf.mu.Lock()
 		if rf.state == LEADER {
 			rf.appendEntries()
