@@ -619,8 +619,8 @@ func (rf *Raft) appendEntries() {
 					Data:              rf.Persister.snapshot,
 				}
 				reply := InstallSnapShotReply{}
-				rf.mu.Unlock()
 				rf.debug("发送 InstallSnapShot: %+v", args)
+				rf.mu.Unlock()
 				if !rf.peers[x].Call("Raft.InstallSnapShot", &args, &reply) {
 					return
 				}
