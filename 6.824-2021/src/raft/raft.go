@@ -106,7 +106,7 @@ func (p Log) String() string {
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
+	Persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
@@ -171,7 +171,7 @@ func (rf *Raft) raftState() []byte {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	rf.debug("持久数据 currentTerm: [%d], votedFor: [%d], 日志长度:[%d]", rf.currentTerm, rf.votedFor, len(rf.logs))
-	rf.persister.SaveRaftState(rf.raftState())
+	rf.Persister.SaveRaftState(rf.raftState())
 }
 
 //
@@ -382,7 +382,7 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) applyLogs() {
-	snapshot := rf.persister.ReadSnapshot()
+	snapshot := rf.Persister.ReadSnapshot()
 	if snapshot != nil && len(snapshot) > 0 {
 		// 一旦 raft 丢弃了之前的日志，状态机就会担负起另外两种新的责任。
 		// 如果 server 重启，在状态机可以 apply raft 日志之前需要从磁盘加载这些数据
@@ -512,6 +512,22 @@ func (rf *Raft) updateCommitIndex(args *AppendEntriesArgs) {
 	}
 }
 
+func (rf *Raft) receiveHeartBeat(term int) {
+	/* restart timer */
+	rf.restartElectionTimer()
+	if term > rf.currentTerm {
+		// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+		rf.toFollower(term)
+	} else { // args.Term = rf.currentTerm
+		util.Assert(rf.state != LEADER, "rf.state == LEADER")
+		/* 另一个 server 被确定为 leader。在等待投票的过程中，candidate 可能收到来自其他 server 的 AppendEntries RPC，声明它才是 leader。如果 RPC 中的 term 大于等于candidate的current term，candidate就会认为这个leader是合法的并转为follower状态。如果 RPC 中的 term 比自己当前的小，将会拒绝这个请求并保持 candidate 状态。*/
+		if rf.state == CANDIDATE {
+			// Candidates (§5.2): If AppendEntries RPC received from new leader: convert to follower
+			rf.toFollower(term)
+		}
+	}
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.snapshotMu.Lock()
 	defer rf.snapshotMu.Unlock()
@@ -525,19 +541,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	defer rf.persist()
-	/* restart timer */
-	rf.restartElectionTimer()
-	if args.Term > rf.currentTerm {
-		// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
-		rf.toFollower(args.Term)
-	} else { // args.Term = rf.currentTerm
-		util.Assert(rf.state != LEADER, "rf.state == LEADER")
-		/* 另一个 server 被确定为 leader。在等待投票的过程中，candidate 可能收到来自其他 server 的 AppendEntries RPC，声明它才是 leader。如果 RPC 中的 term 大于等于candidate的current term，candidate就会认为这个leader是合法的并转为follower状态。如果 RPC 中的 term 比自己当前的小，将会拒绝这个请求并保持 candidate 状态。*/
-		if rf.state == CANDIDATE {
-			// Candidates (§5.2): If AppendEntries RPC received from new leader: convert to follower
-			rf.toFollower(args.Term)
-		}
-	}
+
+	rf.receiveHeartBeat(args.Term)
+
 	if rf.receiveLogs(args, reply) == false {
 		return
 	}
@@ -610,7 +616,7 @@ func (rf *Raft) appendEntries() {
 					LeaderId:          rf.me,
 					LastIncludedIndex: snapShotIndex,
 					LastIncludedTerm:  rf.snapShotTerm,
-					Data:              rf.persister.snapshot,
+					Data:              rf.Persister.snapshot,
 				}
 				reply := InstallSnapShotReply{}
 				rf.mu.Unlock()
@@ -631,17 +637,11 @@ func (rf *Raft) appendEntries() {
 					return
 				}
 				rf.debug("nextIndex[%d]: [%d] -> [%d], matchIndex[%d]: [%d] -> [%d]",
-					x, rf.nextIndex[x], reply.MatchIndex+1,
-					x, rf.matchIndex[x], reply.MatchIndex)
+					x, rf.nextIndex[x], snapShotIndex+1, x, rf.matchIndex[x], snapShotIndex)
 				// fix BUG: 更新 index
-				rf.matchIndex[x] = reply.MatchIndex
-				rf.nextIndex[x] = reply.MatchIndex + 1
+				rf.matchIndex[x] = snapShotIndex
+				rf.nextIndex[x] = snapShotIndex + 1
 				rf.leaderUpdateCommitIndex()
-				if reply.MatchIndex == snapShotIndex {
-					rf.debug("对端snapshot 更新为 [%v], 现在Leader的(%v), reply: {%+v}", reply.MatchIndex, rf.snapShotIndex, reply)
-				} else {
-					rf.debug("对端snapshot 比Leader发的: [%v]新, 现在Leader的(%v), reply: {%+v}", snapShotIndex, rf.snapShotIndex, reply)
-				}
 				return
 			}
 			/* rf.nextIndex[x] > rf.snapShotIndex */
@@ -749,7 +749,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapShotTerm = rf.Logs(index).Term
 	rf.logs = rf.logs[rf.L2A(index):]
 	rf.snapShotIndex = index
-	rf.persister.SaveStateAndSnapshot(rf.raftState(), snapshot)
+	rf.Persister.SaveStateAndSnapshot(rf.raftState(), snapshot)
 	rf.debug("New: snapShotIndex: [%v], snapShotTerm: [%v]", rf.snapShotIndex, rf.snapShotTerm)
 	rf.debug("New logs: [%v]", rf.logs)
 }
@@ -811,23 +811,33 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 		rf.mu.Unlock()
 		return
 	}
-	rf.restartElectionTimer() // ??
-	rf.debug("Old: snapShotIndex: [%v], snapShotTerm: [%v],"+
-		"lastApplied: [%v], commitIndex: [%v]", rf.snapShotIndex, rf.snapShotTerm, rf.lastApplied, rf.commitIndex)
-	rf.debug("logs: [%v]", rf.logs)
-	if args.LastIncludedIndex < rf.LastLogIndex() {
-		reply.MatchIndex = rf.LastLogIndex()
-		rf.debug("InstallSnapShot args.LastIncludedIndex < rf.LastLogIndex() 过时返回")
+
+	rf.receiveHeartBeat(args.Term)
+
+	if args.LastIncludedIndex <= rf.snapShotIndex {
+		rf.debug("InstallSnapShot LastIncludedIndex 过时返回")
 		rf.mu.Unlock()
 		return
 	}
-	reply.MatchIndex = args.LastIncludedIndex
-	rf.persister.SaveStateAndSnapshot(rf.raftState(), args.Data) // #2-#5
+	rf.debug("Old: snapShotIndex: [%v], snapShotTerm: [%v],"+
+		"lastApplied: [%v], commitIndex: [%v]", rf.snapShotIndex, rf.snapShotTerm, rf.lastApplied, rf.commitIndex)
+	rf.debug("logs: [%v]", rf.logs)
+	if args.LastIncludedIndex <= rf.LastLogIndex() &&
+		/* args.LastIncludedIndex > rf.snapShotIndex */
+		rf.Logs(args.LastIncludedIndex).Term == args.LastIncludedTerm {
+		// 这里不要更新 lastApplied 和 commitIndex, 让 AppendEntries 更新,
+		// 因为日志虽然有但是可能没有提交或已经提交得比snapshot多,如果将两者直接更新为 LastIncludedTerm,
+		// 紧接着在 AppendEntries 可能会提交 LastIncludedTerm + 1, apply out of order
+		// 如果对应 log位置 term不同,直接丢弃所有日志,应用 snapshot
+		rf.mu.Unlock()
+		return
+	}
+	rf.Persister.SaveStateAndSnapshot(rf.raftState(), args.Data) // #2-#5
 	/* args.LastIncludedIndex >= rf.LastLogIndex() */
 	rf.logs = []Log{{Term: args.LastIncludedTerm}} // #7
 	rf.snapShotIndex, rf.snapShotTerm = args.LastIncludedIndex, args.LastIncludedTerm
 	rf.lastApplied, rf.commitIndex = args.LastIncludedIndex, args.LastIncludedIndex
-	rf.debug("New2: snapShotIndex: [%v], snapShotTerm: [%v],"+
+	rf.debug("New: snapShotIndex: [%v], snapShotTerm: [%v],"+
 		"lastApplied: [%v], commitIndex: [%v]", rf.snapShotIndex, rf.snapShotTerm, rf.lastApplied, rf.commitIndex)
 	rf.debug("logs: [%v]", rf.logs)
 	msg := ApplyMsg{
@@ -952,7 +962,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf := &Raft{
 		mu:             sync.Mutex{},
 		peers:          peers,
-		persister:      persister,
+		Persister:      persister,
 		me:             me,
 		dead:           0,
 		numPeer:        len(peers),
