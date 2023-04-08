@@ -98,6 +98,8 @@ func (kv *KVServer) exec(op *Op) (value string, err Err) {
 func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
 	kv.mu.Lock()
 	kv.debug("接收到 Raft apply 消息: {%+v}", msg)
+	util.Assert(msg.CommandIndex == kv.lastApplied+1, "msg.CommandIndex != kv.lastApplied + 1")
+	kv.lastApplied = msg.CommandIndex
 	op, ok := msg.Command.(Op)
 	if ok == false { // NoOp
 		op = Op{}
@@ -105,11 +107,11 @@ func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
 	cid, seq := op.Cid, op.Seq
 	var reply Reply
 	if seq != 0 {
+		kv.debug("seq: %v, kv.dupTable[%v].Seq: %v", seq, cid, kv.dupTable[cid].Seq)
 		// ** 同一Client ** 执行过的操作不再执行
-		if seq > kv.dupTable[cid].Seq {
+		if seq == kv.dupTable[cid].Seq+1 {
 			reply.Seq = seq
 			reply.Value, reply.Err = kv.exec(&op)
-			kv.lastApplied = msg.CommandIndex
 			// save reply
 			kv.dupTable[cid] = reply
 		} else if seq == kv.dupTable[cid].Seq {
@@ -140,6 +142,7 @@ func (kv *KVServer) applyOp(msg *raft.ApplyMsg) {
 
 func (kv *KVServer) applySnapShot(msg *raft.ApplyMsg) {
 	kv.mu.Lock()
+	util.Assert(kv.lastApplied <= msg.SnapshotIndex, "kv.lastApplied >  msg.SnapshotIndex")
 	r := bytes.NewBuffer(msg.Snapshot)
 	d := labgob.NewDecoder(r)
 	e1 := d.Decode(&kv.dupTable)

@@ -822,6 +822,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 	rf.debug("Old: snapShotIndex: [%v], snapShotTerm: [%v],"+
 		"lastApplied: [%v], commitIndex: [%v]", rf.snapShotIndex, rf.snapShotTerm, rf.lastApplied, rf.commitIndex)
 	rf.debug("logs: [%v]", rf.logs)
+
 	if args.LastIncludedIndex <= rf.LastLogIndex() &&
 		/* args.LastIncludedIndex > rf.snapShotIndex */
 		rf.Logs(args.LastIncludedIndex).Term == args.LastIncludedTerm {
@@ -832,10 +833,11 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 		rf.mu.Unlock()
 		return
 	}
-	rf.Persister.SaveStateAndSnapshot(rf.raftState(), args.Data) // #2-#5
+	// rf.Persister.SaveStateAndSnapshot(rf.raftState(), args.Data)
 	/* args.LastIncludedIndex >= rf.LastLogIndex() */
 	rf.logs = []Log{{Term: args.LastIncludedTerm}} // #7
 	rf.snapShotIndex, rf.snapShotTerm = args.LastIncludedIndex, args.LastIncludedTerm
+	rf.Persister.SaveStateAndSnapshot(rf.raftState(), args.Data) // #2-#5, fix BUG: 应该在持久化状态更新后再保存
 	rf.lastApplied, rf.commitIndex = args.LastIncludedIndex, args.LastIncludedIndex
 	rf.debug("New: snapShotIndex: [%v], snapShotTerm: [%v],"+
 		"lastApplied: [%v], commitIndex: [%v]", rf.snapShotIndex, rf.snapShotTerm, rf.lastApplied, rf.commitIndex)
