@@ -399,7 +399,6 @@ func (rf *Raft) applyLogs() {
 		rf.debug("发送了 ApplyMsg: %v, lastApplied=[%v], commitIndex=[%v]", msg, rf.lastApplied, rf.commitIndex)
 		rf.mu.Unlock()
 	}
-	rf.cond = sync.NewCond(&rf.mu)
 	for !rf.killed() {
 		rf.mu.Lock()
 		// 由于 Wait 第一次恢复时 c.L 并未锁定，因此调用者一般不能假定 Wait 返回时条件为真。取而代之，调用者应当把 Wait 放入循环中：
@@ -982,6 +981,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		matchIndexCopy: make([]int, len(peers)),
 		applyCh:        applyCh,
 	}
+	rf.cond = sync.NewCond(&rf.mu) // fix BUG: initialize early avoid nil pointer when Broadcast
 	if me != 0 {
 		rf.restartElectionTimer() // 0 start election first
 	}
