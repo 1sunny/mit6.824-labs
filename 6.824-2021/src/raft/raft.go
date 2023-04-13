@@ -40,7 +40,7 @@ const raftDebug = 1
 // caller should hold rf.lock
 func (rf *Raft) debug(format string, a ...interface{}) {
 	if raftDebug > 0 {
-		var logger = log.New(os.Stdout, fmt.Sprintf("%s [%d:%v:%d:%d] ", util.GetTimeBuf(), rf.me, rf.state, rf.currentTerm, rf.commitIndex), 0)
+		var logger = log.New(os.Stdout, fmt.Sprintf("%s %v[%d:%v:%d:%d] ", util.GetTimeBuf(), rf.name, rf.me, rf.state, rf.currentTerm, rf.commitIndex), 0)
 		logger.Printf(format, a...)
 	}
 }
@@ -134,6 +134,7 @@ type Raft struct {
 	snapShotIndex int
 	snapShotTerm  int
 	snapshotMu    sync.Mutex
+	name          string
 }
 
 // return currentTerm and whether this server
@@ -959,7 +960,7 @@ func (rf *Raft) killed() bool {
 // for any long-running work.
 //
 func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	persister *Persister, applyCh chan ApplyMsg, name string) *Raft {
 	rf := &Raft{
 		mu:             sync.Mutex{},
 		peers:          peers,
@@ -980,6 +981,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		matchIndex:     make([]int, len(peers)),
 		matchIndexCopy: make([]int, len(peers)),
 		applyCh:        applyCh,
+		name:           name,
 	}
 	rf.cond = sync.NewCond(&rf.mu) // fix BUG: initialize early avoid nil pointer when Broadcast
 	if me != 0 {
