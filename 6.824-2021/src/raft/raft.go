@@ -35,7 +35,7 @@ import (
 	"6.824/labrpc"
 )
 
-const raftDebug = 0
+const raftDebug = 1
 
 // caller should hold rf.lock
 func (rf *Raft) debug(format string, a ...interface{}) {
@@ -318,7 +318,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else {
 		reply.VoteGranted = false
 	}
-	rf.debug("%v 票给 [%d] 任期 [%d]", reply.VoteGranted, args.CandidateId, args.Term)
+	// rf.debug("%v 票给 [%d] 任期 [%d]", reply.VoteGranted, args.CandidateId, args.Term)
 }
 
 func (rf *Raft) sendRequestVote() {
@@ -345,7 +345,7 @@ func (rf *Raft) sendRequestVote() {
 			}
 			// --
 			rf.mu.Lock()
-			rf.debug("在任期 [%d] 收到 [%d] 回复: {%+v}", oldTerm, x, reply)
+			//rf.debug("在任期 [%d] 收到 [%d] 回复: {%+v}", oldTerm, x, reply)
 			defer rf.mu.Unlock()
 			// All Servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
 			if reply.Term > rf.currentTerm {
@@ -357,7 +357,7 @@ func (rf *Raft) sendRequestVote() {
 			if !reply.VoteGranted {
 				return
 			}
-			rf.debug("在任期: [%d] 得到了 [%d] 的投票", oldTerm, x)
+			//rf.debug("在任期: [%d] 得到了 [%d] 的投票", oldTerm, x)
 			count++
 			// Candidates (§5.2): If votes received from majority of servers: become leader
 			// 如果之前被变为 follower,则竞选失败,因为任期现在可能已经变化了
@@ -552,9 +552,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) majorityMatchIndex() int {
 	copy(rf.matchIndexCopy, rf.matchIndex)
-	rf.debug("排序前: %v", rf.matchIndexCopy)
+	//rf.debug("排序前: %v", rf.matchIndexCopy)
 	sort.Ints(rf.matchIndexCopy)
-	rf.debug("排序后: %v", rf.matchIndexCopy)
+	//rf.debug("排序后: %v", rf.matchIndexCopy)
 	return rf.matchIndexCopy[rf.numPeer/2]
 }
 

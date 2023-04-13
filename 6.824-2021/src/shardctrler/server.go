@@ -208,9 +208,9 @@ func (sc *ShardCtrler) raftReceiver() {
 func (sc *ShardCtrler) handleRequest(
 	opType string, cid, seq int64,
 	servers map[int][]string, // join
-	gIDs []int,               // leave
-	shard, gID int,           // move
-	num int,                  // query
+	gIDs []int, // leave
+	shard, gID int, // move
+	num int, // query
 ) (wl bool, e Err, cf Config) {
 	sc.mu.Lock()
 	op := Op{Type: opType, Cid: cid, Seq: seq,

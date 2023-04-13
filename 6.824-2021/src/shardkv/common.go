@@ -1,5 +1,7 @@
 package shardkv
 
+import "6.824/shardctrler"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -14,6 +16,9 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	Get            = "Get"
+	Put            = "Put"
+	Append         = "Append"
 )
 
 type Err string
@@ -27,6 +32,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Cid int64
+	Seq int64
 }
 
 type PutAppendReply struct {
@@ -36,9 +43,25 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	Cid int64
+	Seq int64
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+//
+// which shard is a key in?
+// please use this function,
+// and please do not change it.
+//
+func key2shard(key string) int {
+	shard := 0
+	if len(key) > 0 {
+		shard = int(key[0])
+	}
+	shard %= shardctrler.NShards
+	return shard
 }
