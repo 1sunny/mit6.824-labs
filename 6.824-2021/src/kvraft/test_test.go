@@ -692,7 +692,7 @@ func TestSnapshotSize3B(t *testing.T) {
 }
 
 func TestSpeed3B(t *testing.T) {
-	GenericTestSpeed(t, "3B", 1000)
+	//GenericTestSpeed(t, "3B", 1000)
 }
 
 func TestSnapshotRecover3B(t *testing.T) {

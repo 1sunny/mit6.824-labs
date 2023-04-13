@@ -18,8 +18,8 @@ const shardCtrlerDebug = 1
 
 // caller should hold lock
 func (sc *ShardCtrler) debug(format string, a ...interface{}) {
-	var logger = log.New(os.Stdout, fmt.Sprintf("%s ShardCtrler[%d] ", util.GetTimeBuf(), sc.me), 0)
 	if shardCtrlerDebug > 0 {
+		var logger = log.New(os.Stdout, fmt.Sprintf("%s Ctrl[%d] ", util.GetTimeBuf(), sc.me), 0)
 		logger.Printf(format, a...)
 	}
 }
@@ -181,12 +181,10 @@ func (sc *ShardCtrler) applyOp(msg *raft.ApplyMsg) {
 	info, ok := sc.waitingInfo[msg.CommandIndex]
 	if ok {
 		delete(sc.waitingInfo, msg.CommandIndex)
-		sc.debug("删除键值: [%d:%+v], ", msg.CommandIndex, info)
 		if rfTerm != msg.Term || isLeader == false ||
 			info.cid != cid || info.seq != seq { // leader has changed
 			reply = Reply{WrongLeader: true, Err: ErrWrongLeader}
 		}
-		sc.debug("发送回复到 index: %v,reply : %v", msg.CommandIndex, reply)
 		select {
 		case info.replyChan <- reply:
 		case <-time.After(10 * time.Millisecond): // 防止请求由于超时已经返回,没有接收端而导致阻塞
@@ -221,18 +219,17 @@ func (sc *ShardCtrler) handleRequest(
 		Shard:   shard, GID: gID,
 		Num: num,
 	}
-	sc.debug("收到操作: %+v", op)
 	if reply := sc.dupTable[cid]; reply.Seq == seq {
 		sc.debug("处理过的操作: %+v", op)
 		sc.mu.Unlock()
 		return false, reply.Err, reply.Cfg
 	}
-	sc.debug("*** 尝试发送给Raft %+v", op)
 	index, term, leader := sc.rf.Start(op)
 	if leader == false {
 		sc.mu.Unlock()
 		return true, ErrWrongLeader, Config{}
 	}
+	sc.debug("*** 收到: %+v, 发给了 Raft", op)
 	replyCh := make(chan Reply)
 	sc.waitingInfo[index] = WaitingInfo{cid: cid, seq: seq, term: term, replyChan: replyCh}
 	sc.mu.Unlock()
@@ -312,7 +309,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	labgob.Register(Op{})
 	sc.applyCh = make(chan raft.ApplyMsg)
-	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+	sc.rf = raft.Make(servers, me, persister, sc.applyCh, "Ctrl")
 
 	// Your code here.
 	sc.dupTable = make(map[int64]Reply)
