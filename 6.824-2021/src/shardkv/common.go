@@ -1,6 +1,9 @@
 package shardkv
 
-import "6.824/shardctrler"
+import (
+	"6.824/shardctrler"
+	"time"
+)
 
 //
 // Sharded key/value server.
@@ -16,6 +19,9 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrNotReady    = "ErrNotReady"
+	ErrOutDated    = "ErrOutDated"
+	ErrTimeout     = "ErrTimeout"
 	Get            = "Get"
 	Put            = "Put"
 	Append         = "Append"
@@ -64,4 +70,13 @@ func key2shard(key string) int {
 	}
 	shard %= shardctrler.NShards
 	return shard
+}
+
+func (kv *ShardKV) ticker(action func(), timeout time.Duration) {
+	for kv.killed() == false {
+		time.Sleep(timeout)
+		if _, isLeader := kv.rf.GetState(); isLeader {
+			action()
+		}
+	}
 }

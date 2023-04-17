@@ -35,7 +35,7 @@ import (
 	"6.824/labrpc"
 )
 
-const raftDebug = 1
+const raftDebug = 0
 
 // caller should hold rf.lock
 func (rf *Raft) debug(format string, a ...interface{}) {

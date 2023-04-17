@@ -194,3 +194,150 @@ Raft通过几个补充规则完善整个算法,使算法可以在各类宕机问
 > 一个相关但不完全相同的问题是假设在发送 RPC 和收到回复之间您的状态没有改变。 一个很好的例子是当您收到对 RPC 的响应时设置 matchIndex = nextIndex - 1 或 matchIndex = len(log) 。 这是不安全的，因为自从您发送 RPC 后，**这两个值都可能已更新**。 相反，**正确的做法**是根据您最初在 RPC 中发送的参数将 **matchIndex 更新为 prevLogIndex + len(entries[]) 。**
 
 ### Raft不能解决的情况
+
+
+
+### 2D
+
+raft 接收到 snapshot 之后, service 应用 installSnapShot 的 snapshot 之前 raft 接收到 append entries, append entries可以根据 lastIncluded 判断是否要接收
+
+raft 接收到 old snapshot, 直接不接收 ?
+
+接收 snapshot 改变日志后, 同时持久化
+
+没有改变日志的情况,不持久化 snapshot ?
+
+
+
+#### [An aside on optimizations](https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations)
+
+The Raft paper includes a couple of optional features of interest. In 6.824, we require the students to implement two of them: log compaction (section 7) and accelerated log backtracking (top left hand side of page 8). The former is necessary to avoid the log growing without bound, and the latter is useful for bringing stale followers up to date quickly.
+
+These features are not a part of “core Raft”, and so do not receive as much attention in the paper as the main consensus protocol. Log compaction is covered fairly thoroughly (in Figure 13), but leaves out some design details that you might miss if you read it too casually:
+
+- When snapshotting application state, you need to make sure that the application state corresponds to the state following some known index in the Raft log. This means that the application either needs to communicate to Raft what index the snapshot corresponds to, or that Raft needs to delay applying additional log entries until the snapshot has been completed.
+
+- The text does not discuss the recovery protocol for when a server crashes and comes back up now that snapshots are involved. In particular, if Raft state and snapshots are committed separately, a server could crash between persisting a snapshot and persisting the updated Raft state. This is a problem, because step 7 in Figure 13 dictates that the Raft log covered by the snapshot *must be discarded*.
+
+  If, when the server comes back up, it reads the updated snapshot, but the outdated log, it may end up applying some log entries *that are already contained within the snapshot*. This happens since the `commitIndex` and `lastApplied` are not persisted, and so Raft doesn’t know that those log entries have already been applied. The fix for this is to introduce a piece of persistent state to Raft that records what “real” index the first entry in Raft’s persisted log corresponds to. This can then be compared to the loaded snapshot’s `lastIncludedIndex` to determine what elements at the head of the log to discard.
+
+The accelerated log backtracking optimization is very underspecified, probably because the authors do not see it as being necessary for most deployments. It is not clear from the text exactly how the conflicting index and term sent back from the client should be used by the leader to determine what `nextIndex` to use. We believe the protocol the authors *probably* want you to follow is:
+
+- If a follower does not have `prevLogIndex` in its log, it should return with `conflictIndex = len(log)` and `conflictTerm = None`.
+- If a follower does have `prevLogIndex` in its log, but the term does not match, it should return `conflictTerm = log[prevLogIndex].Term`, and then search its log for the first index whose entry has term equal to `conflictTerm`.
+- Upon receiving a conflict response, the leader should first search its log for `conflictTerm`. If it finds an entry in its log with that term, it should set `nextIndex` to be the one beyond the index of the *last* entry in that term in its log.
+- If it does not find an entry with that term, it should set `nextIndex = conflictIndex`.
+
+A half-way solution is to just use `conflictIndex` (and ignore `conflictTerm`), which simplifies the implementation, but then the leader will sometimes end up sending more log entries to the follower than is strictly necessary to bring them up to date.
+
+### [Applications on top of Raft](https://thesquareplanet.com/blog/students-guide-to-raft/#applications-on-top-of-raft)
+
+When building a service on top of Raft (such as the key/value store in the [second 6.824 Raft lab](https://pdos.csail.mit.edu/6.824/labs/lab-kvraft.html), the interaction between the service and the Raft log can be tricky to get right. This section details some aspects of the development process that you may find useful when building your application.
+
+#### [Applying client operations](https://thesquareplanet.com/blog/students-guide-to-raft/#applying-client-operations)
+
+You may be confused about how you would even implement an application in terms of a replicated log. You might start off by having your service, whenever it receives a client request, send that request to the leader, wait for Raft to apply something, do the operation the client asked for, and then return to the client. While this would be fine in a single-client system, it does not work for concurrent clients.
+
+Instead, the service should be constructed as a *state machine* where client operations transition the machine from one state to another. You should have a loop somewhere that takes one client operation at the time (in the same order on all servers – this is where Raft comes in), and applies each one to the state machine in order. This loop should be the *only* part of your code that touches the application state (the key/value mapping in 6.824). This means that your client-facing RPC methods should simply submit the client’s operation to Raft, and then *wait* for that operation to be applied by this “applier loop”. Only when the client’s command comes up should it be executed, and any return values read out. Note that *this includes read requests*!
+
+This brings up another question: how do you know when a client operation has completed? In the case of no failures, this is simple – you just wait for the thing you put into the log to come back out (i.e., be passed to `apply()`). When that happens, you return the result to the client. However, what happens if there are failures? For example, you may have been the leader when the client initially contacted you, but someone else has since been elected, and the client request you put in the log has been discarded. Clearly you need to have the client try again, but how do you know when to tell them about the error?
+
+One simple way to solve this problem is to record where in the Raft log the client’s operation appears when you insert it. Once the operation at that index is sent to `apply()`, you can tell whether or not the client’s operation succeeded based on whether the operation that came up for that index is in fact the one you put there. If it isn’t, a failure has happened and an error can be returned to the client.
+
+#### [Duplicate detection](https://thesquareplanet.com/blog/students-guide-to-raft/#duplicate-detection)
+
+As soon as you have clients retry operations in the face of errors, you need some kind of duplicate detection scheme – if a client sends an `APPEND` to your server, doesn’t hear back, and re-sends it to the next server, your `apply()` function needs to ensure that the `APPEND` isn’t executed twice. To do so, you need some kind of unique identifier for each client request, so that you can recognize if you have seen, and more importantly, applied, a particular operation in the past. Furthermore, this state needs to be a part of your state machine so that all your Raft servers eliminate the *same* duplicates.
+
+There are many ways of assigning such identifiers. One simple and fairly efficient one is to give each client a unique identifier, and then have them tag each request with a monotonically increasing sequence number. If a client re-sends a request, it re-uses the same sequence number. Your server keeps track of the latest sequence number it has seen for each client, and simply ignores any operation that it has already seen.
+
+#### [Hairy corner-cases](https://thesquareplanet.com/blog/students-guide-to-raft/#hairy-corner-cases)
+
+If your implementation follows the general outline given above, there are at least two subtle issues you are likely to run into that may be hard to identify without some serious debugging. To save you some time, here they are:
+
+**Re-appearing indices**: Say that your Raft library has some method `Start()` that takes a command, and return the index at which that command was placed in the log (so that you know when to return to the client, as discussed above). You might assume that you will never see `Start()` return the same index twice, or at the very least, that if you see the same index again, the command that first returned that index must have failed. It turns out that neither of these things are true, even if no servers crash.
+
+Consider the following scenario with five servers, S1 through S5. Initially, S1 is the leader, and its log is empty.
+
+1. Two client operations (C1 and C2) arrive on S1
+2. `Start()` return 1 for C1, and 2 for C2.
+3. S1 sends out an `AppendEntries` to S2 containing C1 and C2, but all its other messages are lost.
+4. S3 steps forward as a candidate.
+5. S1 and S2 won’t vote for S3, but S3, S4, and S5 all will, so S3 becomes the leader.
+6. Another client request, C3 comes in to S3.
+7. S3 calls `Start()` (which returns 1)
+8. S3 sends an `AppendEntries` to S1, who discards C1 and C2 from its log, and adds C3.
+9. S3 fails before sending `AppendEntries` to any other servers.
+10. S1 steps forward, and because its log is up-to-date, it is elected leader.
+11. Another client request, C4, arrives at S1
+12. S1 calls `Start()`, which returns 2 (which was also returned for `Start(C2)`.
+13. All of S1’s `AppendEntries` are dropped, and S2 steps forward.
+14. S1 and S3 won’t vote for S2, but S2, S4, and S5 all will, so S2 becomes leader.
+15. A client request C5 comes in to S2
+16. S2 calls `Start()`, which returns 3.
+17. S2 successfully sends `AppendEntries` to all the servers, which S2 reports back to the servers by including an updated `leaderCommit = 3` in the next heartbeat.
+
+Since S2’s log is `[C1 C2 C5]`, this means that the entry that committed (and was applied at all servers, including S1) at index 2 is C2. This despite the fact that C4 was the last client operation to have returned index 2 at S1.
+
+**The four-way deadlock**: All credit for finding this goes to [Steven Allen](http://stebalien.com/), another 6.824 TA. He found the following nasty four-way deadlock that you can easily get into when building applications on top of Raft.
+
+Your Raft code, however it is structured, likely has a `Start()`-like function that allows the application to add new commands to the Raft log. It also likely has a loop that, when `commitIndex` is updated, calls `apply()` on the application for every element in the log between `lastApplied` and `commitIndex`. These routines probably both take some lock `a`. In your Raft-based application, you probably call Raft’s `Start()` function somewhere in your RPC handlers, and you have some code somewhere else that is informed whenever Raft applies a new log entry. Since these two need to communicate (i.e., the RPC method needs to know when the operation it put into the log completes), they both probably take some lock `b`.
+
+In Go, these four code segments probably look something like this:
+
+```
+func (a *App) RPC(args interface{}, reply interface{}) {
+    // ...
+    a.mutex.Lock()
+    i := a.raft.Start(args)
+    // update some data structure so that apply knows to poke us later
+    a.mutex.Unlock()
+    // wait for apply to poke us
+    return
+}
+func (r *Raft) Start(cmd interface{}) int {
+    r.mutex.Lock()
+    // do things to start agreement on this new command
+    // store index in the log where cmd was placed
+    r.mutex.Unlock()
+    return index
+}
+func (a *App) apply(index int, cmd interface{}) {
+    a.mutex.Lock()
+    switch cmd := cmd.(type) {
+    case GetArgs:
+        // do the get
+	// see who was listening for this index
+	// poke them all with the result of the operation
+    // ...
+    }
+    a.mutex.Unlock()
+}
+func (r *Raft) AppendEntries(...) {
+    // ...
+    r.mutex.Lock()
+    // ...
+    for r.lastApplied < r.commitIndex {
+      r.lastApplied++
+      r.app.apply(r.lastApplied, r.log[r.lastApplied])
+    }
+    // ...
+    r.mutex.Unlock()
+}
+```
+
+Consider now if the system is in the following state:
+
+- `App.RPC` has just taken `a.mutex` and called `Raft.Start`
+- `Raft.Start` is waiting for `r.mutex`
+- `Raft.AppendEntries` is holding `r.mutex`, and has just called `App.apply`
+
+We now have a deadlock, because:
+
+- `Raft.AppendEntries` won’t release the lock until `App.apply` returns.
+- `App.apply` can’t return until it gets `a.mutex`.
+- `a.mutex` won’t be released until `App.RPC` returns.
+- `App.RPC` won’t return until `Raft.Start` returns.
+- `Raft.Start` can’t return until it gets `r.mutex`.
+- `Raft.Start` has to wait for `Raft.AppendEntries`.
+
+There are a couple of ways you can get around this problem. The easiest one is to take `a.mutex` *after* calling `a.raft.Start` in `App.RPC`. However, this means that `App.apply` may be called for the operation that `App.RPC` just called `Raft.Start` on *before* `App.RPC` has a chance to record the fact that it wishes to be notified. Another scheme that may yield a neater design is to have a single, dedicated thread calling `r.app.apply` from `Raft`. This thread could be notified every time `commitIndex` is updated, and would then not need to hold a lock in order to apply, breaking the deadlock.
